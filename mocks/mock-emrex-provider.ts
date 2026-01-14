@@ -18,6 +18,15 @@ import * as zlib from 'zlib';
 const PORT = process.env.MOCK_EMREX_PORT || 9081;
 const BRIDGE_STORE_URL = process.env.BRIDGE_STORE_URL || 'http://localhost:3003/store';
 
+// Rewrite localhost URLs to Docker network URLs when running in container
+function rewriteUrlForDocker(url: string): string {
+  // Check if we're in Docker (BRIDGE_STORE_URL will have container hostname)
+  if (BRIDGE_STORE_URL.includes('oots-bridge')) {
+    return url.replace('localhost:3003', 'oots-bridge:3003');
+  }
+  return url;
+}
+
 const app = Fastify({ logger: true });
 
 // Sample ELMO data (simplified)
@@ -199,11 +208,13 @@ app.get('/emrex', async (request, reply) => {
       returnCode = 'NCP_OK';
   }
 
-  console.log(`[Mock EMREX] Sending response to Bridge - returnCode: ${returnCode}`);
+  // Rewrite URL for Docker networking
+  const targetUrl = rewriteUrlForDocker(returnUrl);
+  console.log(`[Mock EMREX] Sending response to Bridge - returnCode: ${returnCode}, url: ${targetUrl}`);
 
   // POST to Bridge's /store endpoint (simulating the callback)
   try {
-    const response = await fetch(returnUrl, {
+    const response = await fetch(targetUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({

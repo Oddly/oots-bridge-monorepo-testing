@@ -197,7 +197,7 @@ services:
     command: ["npx", "tsx", "mocks/mock-emrex-provider.ts"]
     environment:
       - MOCK_EMREX_PORT=9081
-      - BRIDGE_STORE_URL=http://bridge:3003/store
+      - BRIDGE_STORE_URL=http://oots-bridge:3003/store
     ports:
       - "9081:9081"
     networks:
