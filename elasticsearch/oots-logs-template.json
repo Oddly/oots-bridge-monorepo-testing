@@ -1,0 +1,73 @@
+{
+  "index_patterns": ["oots-logs-*"],
+  "template": {
+    "settings": {
+      "number_of_shards": 1,
+      "number_of_replicas": 0,
+      "index.mapping.total_fields.limit": 5000
+    },
+    "mappings": {
+      "dynamic": true,
+      "properties": {
+        "@timestamp": { "type": "date" },
+        "log.level": { "type": "keyword" },
+        "log.logger": { "type": "keyword" },
+        "log.source": { "type": "keyword" },
+        "trace.id": { "type": "keyword" },
+        "event.action": { "type": "keyword" },
+        "event.outcome": { "type": "keyword" },
+        "event.created": { "type": "date" },
+        "event.category": { "type": "keyword" },
+        "event.type": { "type": "keyword" },
+        "messaging.system": { "type": "keyword" },
+        "messaging.operation": { "type": "keyword" },
+        "messaging.message.body.size": { "type": "integer" },
+        "messaging.message.payload_type": { "type": "keyword" },
+        "oots": {
+          "type": "object",
+          "properties": {
+            "edm.version": { "type": "keyword" },
+            "message.type": { "type": "keyword" },
+            "message.id": { "type": "keyword" },
+            "conversation.id": { "type": "keyword" },
+            "request.id": { "type": "keyword" },
+            "request.time": { "type": "date" },
+            "response.id": { "type": "keyword" },
+            "response.result": { "type": "keyword" },
+            "response.status": { "type": "keyword" },
+            "procedure": { "type": "keyword" },
+            "preview.required": { "type": "boolean" },
+            "preview.explicit_request": { "type": "boolean" },
+            "requester.name": { "type": "text", "fields": { "keyword": { "type": "keyword" } } },
+            "requester.country": { "type": "keyword" },
+            "requester.id.scheme": { "type": "keyword" },
+            "requester.id.value": { "type": "keyword" },
+            "provider.name": { "type": "text", "fields": { "keyword": { "type": "keyword" } } },
+            "provider.id.scheme": { "type": "keyword" },
+            "provider.id.value": { "type": "keyword" },
+            "evidence.type.id": { "type": "keyword" },
+            "evidence.type.title": { "type": "text", "fields": { "keyword": { "type": "keyword" } } },
+            "evidence.type.classification": { "type": "keyword" },
+            "evidence.format": { "type": "keyword" },
+            "requirements": { "type": "text" },
+            "transaction.phase": { "type": "keyword" },
+            "natural_person": {
+              "type": "object",
+              "properties": {
+                "level_of_assurance": { "type": "keyword" },
+                "family_name": { "type": "keyword" },
+                "given_name": { "type": "keyword" },
+                "date_of_birth": { "type": "date", "format": "yyyy-MM-dd" }
+              }
+            },
+            "non_repudiation": {
+              "type": "object",
+              "enabled": false
+            }
+          }
+        }
+      }
+    }
+  },
+  "priority": 200
+}

@@ -6,7 +6,7 @@ filebeat.inputs:
     id: oots-logs
     enabled: true
     paths:
-      - /var/log/bridge/oots.log
+      - /var/log/bridge/oots-logs.log
     json:
       keys_under_root: true
       overwrite_keys: true
@@ -18,7 +18,7 @@ filebeat.inputs:
 
 processors:
   - timestamp:
-      field: time
+      field: "@timestamp"
       layouts:
         - '2006-01-02T15:04:05.000Z'
         - '2006-01-02T15:04:05Z'
@@ -31,8 +31,6 @@ processors:
 output.elasticsearch:
   hosts: ["elasticsearch:9200"]
   index: "oots-logs-%{+yyyy.MM.dd}"
-  pipelines:
-    - pipeline: "oots-state3-ecs"
 
 setup.template:
   name: "oots-logs"

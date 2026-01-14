@@ -1,5 +1,9 @@
 #!/bin/bash
-# Setup Elasticsearch with OOTS ingest pipeline
+# Setup Elasticsearch index template for OOTS structured logging
+#
+# This script creates the index template with proper field mappings
+# for OOTS logs using OpenTelemetry/ECS conventions. Run this after
+# Elasticsearch is healthy.
 
 set -e
 
@@ -7,10 +11,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$SCRIPT_DIR/.."
 
 ES_URL="${ES_URL:-http://localhost:9200}"
-PIPELINE_FILE="${PIPELINE_FILE:-$PROJECT_DIR/../oots-logging-states/state3-otel/pipeline/ingest-pipeline.json}"
+TEMPLATE_FILE="$PROJECT_DIR/elasticsearch/oots-logs-template.json"
 
 echo "=========================================="
-echo "Elasticsearch OOTS Pipeline Setup"
+echo "Elasticsearch OOTS Logging Setup"
 echo "=========================================="
 echo ""
 
@@ -31,114 +35,98 @@ done
 
 echo ""
 
-# Check if pipeline file exists
-if [ ! -f "$PIPELINE_FILE" ]; then
-    echo "WARNING: Pipeline file not found at $PIPELINE_FILE"
-    echo "Creating a basic OOTS ingest pipeline..."
-
-    # Create basic pipeline inline
-    curl -sf -X PUT "$ES_URL/_ingest/pipeline/oots-state3-ecs" \
+# Create index template from file if it exists, otherwise use inline template
+if [ -f "$TEMPLATE_FILE" ]; then
+    echo "Installing index template from: $TEMPLATE_FILE"
+    curl -sf -X PUT "$ES_URL/_index_template/oots-logs" \
         -H "Content-Type: application/json" \
-        -d '{
-        "description": "OOTS State 3 ECS Pipeline",
-        "processors": [
-            {
-                "script": {
-                    "description": "Flatten log.oots to oots",
-                    "lang": "painless",
-                    "source": "if (ctx.log != null && ctx.log.oots != null && ctx.oots == null) { ctx.oots = ctx.log.oots; }"
-                }
-            },
-            {
-                "rename": {
-                    "field": "msg",
-                    "target_field": "message",
-                    "ignore_missing": true
-                }
-            },
-            {
-                "date": {
-                    "field": "time",
-                    "target_field": "@timestamp",
-                    "formats": ["ISO8601"],
-                    "ignore_failure": true
-                }
-            }
-        ]
-    }' || {
-        echo "ERROR: Failed to create pipeline"
+        -d "@$TEMPLATE_FILE" || {
+        echo "ERROR: Failed to create index template"
         exit 1
     }
 else
-    echo "Installing pipeline from: $PIPELINE_FILE"
-    curl -sf -X PUT "$ES_URL/_ingest/pipeline/oots-state3-ecs" \
+    echo "Template file not found, creating index template inline..."
+    curl -sf -X PUT "$ES_URL/_index_template/oots-logs" \
         -H "Content-Type: application/json" \
-        -d "@$PIPELINE_FILE" || {
-        echo "ERROR: Failed to install pipeline"
-        exit 1
-    }
-fi
-
-echo "✓ OOTS ingest pipeline installed"
-echo ""
-
-# Create index template
-echo "Creating index template..."
-curl -sf -X PUT "$ES_URL/_index_template/oots-logs" \
-    -H "Content-Type: application/json" \
-    -d '{
+        -d '{
     "index_patterns": ["oots-logs-*"],
     "template": {
         "settings": {
-            "index": {
-                "number_of_shards": 1,
-                "number_of_replicas": 0,
-                "default_pipeline": "oots-state3-ecs"
-            }
+            "number_of_shards": 1,
+            "number_of_replicas": 0,
+            "index.mapping.total_fields.limit": 5000
         },
         "mappings": {
             "dynamic": true,
             "properties": {
                 "@timestamp": { "type": "date" },
-                "message": { "type": "text" },
-                "level": { "type": "keyword" },
+                "log.level": { "type": "keyword" },
+                "log.logger": { "type": "keyword" },
+                "log.source": { "type": "keyword" },
+                "trace.id": { "type": "keyword" },
+                "event.action": { "type": "keyword" },
+                "event.outcome": { "type": "keyword" },
+                "event.created": { "type": "date" },
+                "event.category": { "type": "keyword" },
+                "event.type": { "type": "keyword" },
+                "messaging.system": { "type": "keyword" },
+                "messaging.operation": { "type": "keyword" },
+                "messaging.message.body.size": { "type": "integer" },
+                "messaging.message.payload_type": { "type": "keyword" },
                 "oots": {
                     "type": "object",
                     "properties": {
-                        "scenario": { "type": "keyword" },
-                        "result": { "type": "keyword" },
-                        "reason": { "type": "keyword" },
-                        "error": { "type": "keyword" },
-                        "step": { "type": "keyword" },
-                        "conversationId": { "type": "keyword" },
-                        "responseId": { "type": "keyword" }
-                    }
-                },
-                "messaging": {
-                    "type": "object",
-                    "properties": {
-                        "message": {
+                        "edm.version": { "type": "keyword" },
+                        "message.type": { "type": "keyword" },
+                        "message.id": { "type": "keyword" },
+                        "conversation.id": { "type": "keyword" },
+                        "request.id": { "type": "keyword" },
+                        "request.time": { "type": "date" },
+                        "response.id": { "type": "keyword" },
+                        "response.result": { "type": "keyword" },
+                        "response.status": { "type": "keyword" },
+                        "procedure": { "type": "keyword" },
+                        "preview.required": { "type": "boolean" },
+                        "preview.explicit_request": { "type": "boolean" },
+                        "requester.name": { "type": "text", "fields": { "keyword": { "type": "keyword" } } },
+                        "requester.country": { "type": "keyword" },
+                        "requester.id.scheme": { "type": "keyword" },
+                        "requester.id.value": { "type": "keyword" },
+                        "provider.name": { "type": "text", "fields": { "keyword": { "type": "keyword" } } },
+                        "provider.id.scheme": { "type": "keyword" },
+                        "provider.id.value": { "type": "keyword" },
+                        "evidence.type.id": { "type": "keyword" },
+                        "evidence.type.title": { "type": "text", "fields": { "keyword": { "type": "keyword" } } },
+                        "evidence.type.classification": { "type": "keyword" },
+                        "evidence.format": { "type": "keyword" },
+                        "requirements": { "type": "text" },
+                        "transaction.phase": { "type": "keyword" },
+                        "natural_person": {
                             "type": "object",
                             "properties": {
-                                "id": { "type": "keyword" }
+                                "level_of_assurance": { "type": "keyword" },
+                                "family_name": { "type": "keyword" },
+                                "given_name": { "type": "keyword" },
+                                "date_of_birth": { "type": "date", "format": "yyyy-MM-dd" }
                             }
+                        },
+                        "non_repudiation": {
+                            "type": "object",
+                            "enabled": false
                         }
-                    }
-                },
-                "transaction": {
-                    "type": "object",
-                    "properties": {
-                        "id": { "type": "keyword" }
                     }
                 }
             }
         }
-    }
+    },
+    "priority": 200
 }' || {
-    echo "WARNING: Failed to create index template"
-}
+        echo "ERROR: Failed to create index template"
+        exit 1
+    }
+fi
 
-echo "✓ Index template created"
+echo "✓ Index template 'oots-logs' created"
 echo ""
 echo "=========================================="
 echo "Elasticsearch setup complete"
@@ -146,3 +134,13 @@ echo "=========================================="
 echo ""
 echo "Kibana: http://localhost:5601"
 echo "Index pattern: oots-logs-*"
+echo ""
+echo "Available OOTS fields:"
+echo "  - oots.message.type (QueryRequest/QueryResponse)"
+echo "  - oots.conversation.id"
+echo "  - oots.request.id"
+echo "  - oots.response.result"
+echo "  - oots.requester.name, oots.requester.country"
+echo "  - oots.provider.name, oots.provider.id.value"
+echo "  - event.action, event.outcome"
+echo "  - trace.id (for distributed tracing)"
