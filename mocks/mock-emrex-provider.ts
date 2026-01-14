@@ -68,8 +68,73 @@ const sampleElmo = `<?xml version="1.0" encoding="UTF-8"?>
 </elmo>`;
 
 // Behavior configuration (can be changed via API)
-let behavior: 'success' | 'error' | 'timeout' | 'no_records' = 'success';
+type BehaviorMode =
+  | 'success'
+  | 'error'
+  | 'timeout'
+  | 'no_records'
+  | 'cancel'
+  | 'invalid_gzip'
+  | 'invalid_xml'
+  | 'identity_mismatch';
+
+let behavior: BehaviorMode = 'success';
 let responseDelay = 0; // milliseconds
+
+// Invalid XML that will fail schema validation
+const invalidElmoXml = `<?xml version="1.0" encoding="UTF-8"?>
+<elmo xmlns="https://github.com/emrex-eu/elmo-schemas/tree/v1">
+  <generatedDate>2025-01-14T10:00:00Z</generatedDate>
+  <learner>
+    <givenNames>Jonas</givenNames>
+    <familyName>Smith</familyName>
+    <bday>1999-03-01</bday>
+  </learner>
+  <report>
+    <issuer>
+      <identifier type="schac">invalid</identifier>
+      <country>NL</country>
+    </issuer>
+  </report>
+</elmo>`;
+
+// ELMO with mismatched identity (different name/DOB)
+const mismatchedIdentityElmo = `<?xml version="1.0" encoding="UTF-8"?>
+<elmo xmlns="https://github.com/emrex-eu/elmo-schemas/tree/v1"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <generatedDate>2025-01-14T10:00:00Z</generatedDate>
+  <learner>
+    <citizenship>NL</citizenship>
+    <identifier type="nationalIdentifier">BSN999999999</identifier>
+    <givenNames>WrongFirstName</givenNames>
+    <familyName>WrongLastName</familyName>
+    <bday>1985-12-25</bday>
+  </learner>
+  <report>
+    <issuer>
+      <identifier type="schac">urn:schac:personalUniqueCode:nl:local:universityX</identifier>
+      <title xml:lang="en">University X</title>
+      <country>NL</country>
+    </issuer>
+    <learningOpportunitySpecification>
+      <identifier type="local">DEGREE-002</identifier>
+      <title xml:lang="en">Bachelor of Arts</title>
+      <type>Degree</type>
+      <iscedCode>0613</iscedCode>
+      <specifies>
+        <learningOpportunityInstance>
+          <start>2017-09-01</start>
+          <date>2021-06-30</date>
+          <status>passed</status>
+          <credit>
+            <scheme>ects</scheme>
+            <value>180</value>
+          </credit>
+        </learningOpportunityInstance>
+      </specifies>
+    </learningOpportunitySpecification>
+  </report>
+</elmo>`;
 
 // Store endpoint redirect (simulates user completing EMREX flow)
 app.get('/emrex', async (request, reply) => {
@@ -99,21 +164,39 @@ app.get('/emrex', async (request, reply) => {
 
   switch (behavior) {
     case 'success':
-      returnCode = 'NI_OK';
+      returnCode = 'NCP_OK';
       // Compress and base64 encode ELMO
-      const compressed = zlib.gzipSync(Buffer.from(sampleElmo, 'utf-8'));
-      elmoData = compressed.toString('base64');
+      elmoData = zlib.gzipSync(Buffer.from(sampleElmo, 'utf-8')).toString('base64');
       break;
     case 'error':
-      returnCode = 'NI_ERROR';
+      returnCode = 'NCP_ERROR';
       returnMessage = 'An error occurred at the EMREX provider';
       break;
     case 'no_records':
-      returnCode = 'NI_NO_RESULTS';
+      returnCode = 'NCP_NO_RESULTS';
       returnMessage = 'No matching records found for this learner';
       break;
+    case 'cancel':
+      returnCode = 'NCP_CANCEL';
+      returnMessage = 'User cancelled the EMREX flow';
+      break;
+    case 'invalid_gzip':
+      returnCode = 'NCP_OK';
+      // Send non-gzipped data (will fail inflate)
+      elmoData = Buffer.from('this is not gzipped data').toString('base64');
+      break;
+    case 'invalid_xml':
+      returnCode = 'NCP_OK';
+      // Send gzipped but invalid XML (will fail schema validation)
+      elmoData = zlib.gzipSync(Buffer.from(invalidElmoXml, 'utf-8')).toString('base64');
+      break;
+    case 'identity_mismatch':
+      returnCode = 'NCP_OK';
+      // Send valid ELMO but with mismatched identity
+      elmoData = zlib.gzipSync(Buffer.from(mismatchedIdentityElmo, 'utf-8')).toString('base64');
+      break;
     default:
-      returnCode = 'NI_OK';
+      returnCode = 'NCP_OK';
   }
 
   console.log(`[Mock EMREX] Sending response to Bridge - returnCode: ${returnCode}`);
@@ -176,8 +259,19 @@ app.post('/emrex', async (request, reply) => {
 app.post('/test/behavior', async (request, reply) => {
   const { mode, delay } = request.body as { mode?: string; delay?: number };
 
-  if (mode && ['success', 'error', 'timeout', 'no_records'].includes(mode)) {
-    behavior = mode as typeof behavior;
+  const validModes: BehaviorMode[] = [
+    'success',
+    'error',
+    'timeout',
+    'no_records',
+    'cancel',
+    'invalid_gzip',
+    'invalid_xml',
+    'identity_mismatch',
+  ];
+
+  if (mode && validModes.includes(mode as BehaviorMode)) {
+    behavior = mode as BehaviorMode;
   }
   if (typeof delay === 'number') {
     responseDelay = delay;

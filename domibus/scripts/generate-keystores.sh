@@ -19,13 +19,14 @@ cd "$BLUE_KEYSTORE_DIR"
 
 # Generate Blue Gateway keypair
 echo "1. Generating blue_gw keypair..."
-rm -f gateway_keystore.jks blue_gw.cer gateway_truststore.jks 2>/dev/null || true
+rm -f gateway_keystore.p12 blue_gw.cer gateway_truststore.p12 2>/dev/null || true
 keytool -genkeypair \
     -alias blue_gw \
     -keyalg RSA \
     -keysize 2048 \
     -validity 365 \
-    -keystore gateway_keystore.jks \
+    -storetype PKCS12 \
+    -keystore gateway_keystore.p12 \
     -storepass "$PASSWORD" \
     -keypass "$PASSWORD" \
     -dname "CN=Blue Gateway, OU=OOTS Testing, O=Test, L=Brussels, ST=Brussels, C=BE" \
@@ -35,7 +36,8 @@ keytool -genkeypair \
 echo "2. Exporting blue_gw certificate..."
 keytool -exportcert \
     -alias blue_gw \
-    -keystore gateway_keystore.jks \
+    -storetype PKCS12 \
+    -keystore gateway_keystore.p12 \
     -storepass "$PASSWORD" \
     -file blue_gw.cer \
     -rfc
@@ -48,13 +50,14 @@ cd "$RED_KEYSTORE_DIR"
 
 # Generate Red Gateway keypair
 echo "3. Generating red_gw keypair..."
-rm -f gateway_keystore.jks red_gw.cer gateway_truststore.jks 2>/dev/null || true
+rm -f gateway_keystore.p12 red_gw.cer gateway_truststore.p12 2>/dev/null || true
 keytool -genkeypair \
     -alias red_gw \
     -keyalg RSA \
     -keysize 2048 \
     -validity 365 \
-    -keystore gateway_keystore.jks \
+    -storetype PKCS12 \
+    -keystore gateway_keystore.p12 \
     -storepass "$PASSWORD" \
     -keypass "$PASSWORD" \
     -dname "CN=Red Gateway, OU=OOTS Testing, O=Test, L=Amsterdam, ST=NH, C=NL" \
@@ -64,7 +67,8 @@ keytool -genkeypair \
 echo "4. Exporting red_gw certificate..."
 keytool -exportcert \
     -alias red_gw \
-    -keystore gateway_keystore.jks \
+    -storetype PKCS12 \
+    -keystore gateway_keystore.p12 \
     -storepass "$PASSWORD" \
     -file red_gw.cer \
     -rfc
@@ -80,14 +84,16 @@ cd "$BLUE_KEYSTORE_DIR"
 keytool -importcert \
     -alias blue_gw \
     -file blue_gw.cer \
-    -keystore gateway_truststore.jks \
+    -storetype PKCS12 \
+    -keystore gateway_truststore.p12 \
     -storepass "$PASSWORD" \
     -noprompt
 
 keytool -importcert \
     -alias red_gw \
     -file "$RED_KEYSTORE_DIR/red_gw.cer" \
-    -keystore gateway_truststore.jks \
+    -storetype PKCS12 \
+    -keystore gateway_truststore.p12 \
     -storepass "$PASSWORD" \
     -noprompt
 
@@ -97,14 +103,16 @@ cd "$RED_KEYSTORE_DIR"
 keytool -importcert \
     -alias red_gw \
     -file red_gw.cer \
-    -keystore gateway_truststore.jks \
+    -storetype PKCS12 \
+    -keystore gateway_truststore.p12 \
     -storepass "$PASSWORD" \
     -noprompt
 
 keytool -importcert \
     -alias blue_gw \
     -file "$BLUE_KEYSTORE_DIR/blue_gw.cer" \
-    -keystore gateway_truststore.jks \
+    -storetype PKCS12 \
+    -keystore gateway_truststore.p12 \
     -storepass "$PASSWORD" \
     -noprompt
 

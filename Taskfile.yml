@@ -27,8 +27,8 @@ tasks:
     cmds:
       - ./generate-keystores.sh
     status:
-      - test -f ../conf/keystores/gateway_keystore.jks
-      - test -f ../conf-red/keystores/gateway_keystore.jks
+      - test -f ../conf/keystores/gateway_keystore.p12
+      - test -f ../conf-red/keystores/gateway_keystore.p12
 
   setup:domibus:
     desc: "Download Domibus DDL and WS plugin"
@@ -113,8 +113,7 @@ tasks:
     desc: "Remove all E2E volumes (fresh start)"
     cmds:
       - docker compose -f docker-compose.e2e.yml down -v
-      - rm -f domibus/conf/keystores/*.jks domibus/conf/keystores/*.cer
-      - rm -f domibus/conf-red/keystores/*.jks domibus/conf-red/keystores/*.cer
+      - rm -rf domibus/conf/keystores/* domibus/conf-red/keystores/*
 
   e2e:status:
     desc: "Show E2E stack status"
@@ -165,6 +164,21 @@ tasks:
     desc: "Send a test OOTS request through the system"
     cmds:
       - ./scripts/trigger-request.sh
+
+  e2e:validate:
+    desc: "Validate structured logs in Elasticsearch"
+    cmds:
+      - npx tsx scripts/validate.ts
+
+  e2e:path-tests:
+    desc: "Run comprehensive path coverage tests"
+    cmds:
+      - npx tsx scripts/path-coverage-tests.ts {{.CLI_ARGS}}
+
+  e2e:path-tests:single:
+    desc: "Run a single path test (e.g., task e2e:path-tests:single -- --path=2)"
+    cmds:
+      - npx tsx scripts/path-coverage-tests.ts {{.CLI_ARGS}}
 
   # ==========================================================================
   # Legacy Single Domibus Stack (for backward compatibility)
@@ -243,5 +257,4 @@ tasks:
       - docker compose -f docker-compose.yml -f docker-compose.domibus.yml down -v 2>/dev/null || true
       - docker compose -f docker-compose.e2e.yml down -v 2>/dev/null || true
       - rm -f testdata/*.ndjson testdata/*.log
-      - rm -f domibus/conf/keystores/*.jks domibus/conf/keystores/*.cer
-      - rm -f domibus/conf-red/keystores/*.jks domibus/conf-red/keystores/*.cer
+      - rm -rf domibus/conf/keystores/* domibus/conf-red/keystores/*

@@ -89,10 +89,11 @@ services:
     networks:
       - oots-e2e-network
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-proot"]
+      test: ["CMD-SHELL", "mysql -u root -proot -e 'SELECT 1 FROM domibus.TB_USER LIMIT 1' 2>/dev/null || exit 1"]
       interval: 10s
       timeout: 5s
-      retries: 10
+      retries: 30
+      start_period: 30s
 
   domibus-blue:
     image: tanzari/domibus:latest
@@ -147,10 +148,11 @@ services:
     networks:
       - oots-e2e-network
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-proot"]
+      test: ["CMD-SHELL", "mysql -u root -proot -e 'SELECT 1 FROM domibus.TB_USER LIMIT 1' 2>/dev/null || exit 1"]
       interval: 10s
       timeout: 5s
-      retries: 10
+      retries: 30
+      start_period: 30s
 
   domibus-red:
     image: tanzari/domibus:latest
