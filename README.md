@@ -144,17 +144,20 @@ When the stack is running, these services are available:
 
 The test suite validates structured logging across different execution paths:
 
-| Path | Name | Description |
-|------|------|-------------|
-| 1 | Happy Path (Preview Required) | Initial request → PreviewRequired response |
-| 2 | Happy Path (Evidence Delivered) | Request with PreviewLocation → Evidence delivered |
-| 6 | EMREX User Cancellation | User cancels → NCP_CANCEL → Error response |
-| 7 | EMREX Provider Error | Provider error → NCP_ERROR → Error response |
-| 8 | EMREX No Results | No records found → NCP_NO_RESULTS |
-| 9 | EMREX Invalid GZIP | Bad compression → Decode error |
-| 10 | EMREX Invalid XML | Schema validation failure |
-| 11 | EMREX Identity Mismatch | Wrong person data → Identity error |
-| 12 | Session Timeout | User doesn't complete flow |
+| Path | Name | Description | Status |
+|------|------|-------------|--------|
+| 1 | Happy Path (Preview Required) | Initial request → PreviewRequired response | ✓ |
+| 2 | Happy Path (Evidence Delivered) | Request with PreviewLocation → Evidence delivered | ✓ |
+| 3 | No Preview Support | Direct error when preview not supported | TODO |
+| 4 | Request XML Validation Error | Malformed request XML | TODO |
+| 5 | Request Schematron Error | Request fails schematron validation | TODO |
+| 6 | EMREX User Cancellation | User cancels → NCP_CANCEL → Error response | ✓ |
+| 7 | EMREX Provider Error | Provider error → NCP_ERROR → Error response | ✓ |
+| 8 | EMREX No Results | No records found → NCP_NO_RESULTS | ✓ |
+| 9 | EMREX Invalid GZIP | Bad compression → Decode error | ✓ |
+| 10 | EMREX Invalid XML | Schema validation failure | ✓ |
+| 11 | EMREX Identity Mismatch | Wrong person data → Identity error | ✓ |
+| 12 | Session Timeout | User doesn't complete flow | ✓ |
 
 Each test:
 1. Configures mock EMREX behavior
