@@ -1,0 +1,20 @@
+FROM node:22-alpine
+
+# Install curl for healthchecks
+RUN apk add --no-cache curl
+
+WORKDIR /app
+
+# Install dependencies (including devDependencies for tsx)
+COPY package*.json ./
+RUN npm install --include=dev
+
+# Copy mock source files
+COPY mocks/ ./mocks/
+COPY tsconfig.json ./
+
+# Expose ports for mocks
+EXPOSE 8080 9081
+
+# Default command (override in docker-compose)
+CMD ["npx", "tsx", "mocks/mock-domibus.ts"]

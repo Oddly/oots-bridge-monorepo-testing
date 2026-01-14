@@ -226,11 +226,10 @@ services:
       - EMREX_DATA_PROVIDERS={"00000001800866472000":"http://mock-emrex:9081/emrex"}
       # Certificate endpoint
       - CERTIFICATE_FETCH_ENDPOINT=http://mock-emrex:9081/certificates
-      # Logging - send to file for collection
-      - APP_LOGS_USE_FILE=false
+      # Logging - all to files for Filebeat collection
+      - APP_LOGS_USE_FILE=true
       - OOTS_LOGS_USE_FILE=true
-      - OOTS_LOGS_PATH=/app/logs/oots.log
-      - EXT_LOGS_USE_FILE=false
+      - EXT_LOGS_USE_FILE=true
       # Polling
       - DOMIBUS_POLLING_INTERVAL=2
       # Timeouts

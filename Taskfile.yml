@@ -83,6 +83,7 @@ tasks:
           sleep 10
         done
       - task: e2e:setup-elasticsearch
+      - task: e2e:setup-kibana
       - task: e2e:configure-domibus
       - task: e2e:upload-pmodes
       - |
@@ -141,9 +142,14 @@ tasks:
       - docker compose -f docker-compose.e2e.yml logs -f bridge
 
   e2e:setup-elasticsearch:
-    desc: "Setup Elasticsearch with OOTS ingest pipeline"
+    desc: "Setup Elasticsearch with OOTS index template"
     cmds:
       - ./scripts/setup-elasticsearch.sh
+
+  e2e:setup-kibana:
+    desc: "Setup Kibana with OOTS dashboard"
+    cmds:
+      - ./scripts/setup-kibana.sh
 
   e2e:configure-domibus:
     desc: "Configure Domibus users and roles"

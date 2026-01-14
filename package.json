@@ -1,0 +1,32 @@
+{
+  "name": "oots-bridge-logging-test",
+  "version": "1.0.0",
+  "description": "E2E testing for OOTS Bridge structured JSON logging",
+  "type": "module",
+  "scripts": {
+    "generate-logs": "tsx scripts/generate-logs.ts",
+    "validate": "tsx scripts/validate.ts",
+    "start": "docker compose up -d && npm run generate-logs",
+    "stop": "docker compose down",
+    "clean": "docker compose down -v && rm -f testdata/*.ndjson testdata/*.log",
+    "mock:emrex": "tsx mocks/mock-emrex-provider.ts",
+    "test:scenarios": "tsx mocks/test-scenarios.ts",
+    "domibus:setup": "./domibus/scripts/generate-keystores.sh",
+    "domibus:start": "docker compose -f docker-compose.yml -f docker-compose.domibus.yml up -d",
+    "domibus:stop": "docker compose -f docker-compose.yml -f docker-compose.domibus.yml down",
+    "domibus:logs": "docker compose -f docker-compose.yml -f docker-compose.domibus.yml logs -f",
+    "e2e:domibus": "npm run domibus:start && echo 'Waiting for services...' && sleep 120 && npm run test:scenarios"
+  },
+  "dependencies": {
+    "fast-xml-parser": "^5.3.3",
+    "fastify": "^5.2.3",
+    "soap": "^1.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "concurrently": "^9.0.0",
+    "playwright": "^1.57.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.9.3"
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "esModuleInterop": true,
+    "strict": true,
+    "skipLibCheck": true,
+    "paths": {
+      "@oots-logs/*": ["../oots-bridge-monorepo/apps/bridge/backend/src/utils/oots-logs/*"]
+    },
+    "baseUrl": "."
+  },
+  "include": ["scripts/**/*"],
+  "ts-node": {
+    "esm": true
+  }
+}

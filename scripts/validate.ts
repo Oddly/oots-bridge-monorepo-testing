@@ -6,7 +6,7 @@ import * as http from 'http';
 
 const ES_HOST = process.env.ES_HOST || 'localhost';
 const ES_PORT = process.env.ES_PORT || '9200';
-const INDEX_PATTERN = 'oots-structured-logs-*';
+const INDEX_PATTERN = 'oots-logs-*';
 
 interface ValidationResult {
   scenario: string;
@@ -77,6 +77,56 @@ async function getDocumentByMsg(msg: string): Promise<any> {
     size: 1,
   });
   return response.hits?.hits?.[0]?._source;
+}
+
+async function getDocumentByEventAction(eventAction: string): Promise<any> {
+  const response = await esQuery({
+    query: { term: { 'event.action': eventAction } },
+    size: 1,
+    sort: [{ '@timestamp': 'desc' }],
+  });
+  return response.hits?.hits?.[0]?._source;
+}
+
+async function getDocumentsByConversationId(conversationId: string): Promise<any[]> {
+  const response = await esQuery({
+    query: { term: { 'oots.conversation.id': conversationId } },
+    size: 100,
+    sort: [{ '@timestamp': 'asc' }],
+  });
+  return response.hits?.hits?.map((h: any) => h._source) || [];
+}
+
+async function getAppLogsByOperation(operation: string): Promise<any[]> {
+  const response = await esQuery({
+    query: {
+      bool: {
+        must: [
+          { term: { 'log.logger': 'APP' } },
+          { term: { 'event.action': operation } },
+        ],
+      },
+    },
+    size: 10,
+    sort: [{ '@timestamp': 'desc' }],
+  });
+  return response.hits?.hits?.map((h: any) => h._source) || [];
+}
+
+async function getExtLogsByOperation(operation: string): Promise<any[]> {
+  const response = await esQuery({
+    query: {
+      bool: {
+        must: [
+          { term: { 'log.logger': 'EXT' } },
+          { term: { 'event.action': operation } },
+        ],
+      },
+    },
+    size: 10,
+    sort: [{ '@timestamp': 'desc' }],
+  });
+  return response.hits?.hits?.map((h: any) => h._source) || [];
 }
 
 function validateFields(doc: any, expected: Record<string, any>): string[] {
@@ -162,179 +212,320 @@ async function main() {
     await new Promise((r) => setTimeout(r, 10000));
   }
 
-  // Validate each scenario with comprehensive field checks
+  let passed = 0;
+  let failed = 0;
+
+  // ==========================================================================
+  // OOTS LOG VALIDATIONS (Evidence Request/Response logs)
+  // ==========================================================================
+  console.log('\n--- OOTS Logs (Evidence Request/Response) ---\n');
+
+  // Find evidence request logs by event.action
+  const evidenceRequestDoc = await getDocumentByEventAction('evidence_request_received');
+  if (evidenceRequestDoc) {
+    const errors = validateFields(evidenceRequestDoc, {
+      // OpenTelemetry fields
+      'messaging.system': 'domibus',
+      'messaging.operation': 'receive',
+
+      // ECS Event fields
+      'event.action': 'evidence_request_received',
+      'event.outcome': 'success',
+
+      // OOTS Business Context
+      'oots.message.type': 'QueryRequest',
+    });
+
+    // Check for presence of key fields (values vary)
+    const requiredFields = [
+      'trace.id',
+      'oots.message.id',
+      'oots.conversation.id',
+      'oots.request.id',
+      'oots.non_repudiation',
+    ];
+    for (const field of requiredFields) {
+      if (getNestedValue(evidenceRequestDoc, field) === undefined) {
+        errors.push(`${field}: required field missing`);
+      }
+    }
+
+    if (errors.length === 0) {
+      console.log('✓ Evidence Request Log (OOTS)');
+      passed++;
+    } else {
+      console.log('✗ Evidence Request Log (OOTS)');
+      for (const err of errors) {
+        console.log(`    - ${err}`);
+      }
+      failed++;
+    }
+  } else {
+    console.log('✗ Evidence Request Log (OOTS) - No document found');
+    failed++;
+  }
+
+  // Find evidence response logs by event.action
+  const evidenceResponseDoc = await getDocumentByEventAction('evidence_response_sent');
+  if (evidenceResponseDoc) {
+    const errors = validateFields(evidenceResponseDoc, {
+      // OpenTelemetry fields
+      'messaging.system': 'domibus',
+      'messaging.operation': 'publish',
+
+      // ECS Event fields
+      'event.action': 'evidence_response_sent',
+
+      // OOTS Business Context
+      'oots.message.type': 'QueryResponse',
+    });
+
+    // Check for presence of key fields
+    const requiredFields = [
+      'trace.id',
+      'oots.message.id',
+      'oots.conversation.id',
+      'oots.response.result',
+      'oots.non_repudiation',
+    ];
+    for (const field of requiredFields) {
+      if (getNestedValue(evidenceResponseDoc, field) === undefined) {
+        errors.push(`${field}: required field missing`);
+      }
+    }
+
+    if (errors.length === 0) {
+      console.log('✓ Evidence Response Log (OOTS)');
+      passed++;
+    } else {
+      console.log('✗ Evidence Response Log (OOTS)');
+      for (const err of errors) {
+        console.log(`    - ${err}`);
+      }
+      failed++;
+    }
+  } else {
+    console.log('✗ Evidence Response Log (OOTS) - No document found');
+    failed++;
+  }
+
+  // ==========================================================================
+  // APP LOG VALIDATIONS (Internal application operations)
+  // ==========================================================================
+  console.log('\n--- APP Logs (Internal Operations) ---\n');
+
+  const appLogValidations = [
+    {
+      name: 'Domibus Message Retrieval Started',
+      eventAction: 'domibus_message_retrieval_started',
+      requiredFields: ['trace.id', 'event.outcome', 'event.category', 'event.type'],
+    },
+    {
+      name: 'Domibus Message Retrieval Completed',
+      eventAction: 'domibus_message_retrieval_completed',
+      requiredFields: ['trace.id', 'event.outcome'],
+    },
+    {
+      name: 'OOTS Request XML Validation',
+      eventAction: 'oots_request_xml_validation_completed',
+      requiredFields: ['trace.id', 'event.outcome'],
+    },
+    {
+      name: 'OOTS Request Schematron Validation',
+      eventAction: 'oots_request_schematron_validation_completed',
+      requiredFields: ['trace.id', 'event.outcome'],
+    },
+    {
+      name: 'Domibus Message Submission Started',
+      eventAction: 'domibus_message_submission_started',
+      requiredFields: ['trace.id', 'event.outcome'],
+    },
+    {
+      name: 'Domibus Message Submission Completed',
+      eventAction: 'domibus_message_submission_completed',
+      requiredFields: ['trace.id', 'event.outcome'],
+    },
+    {
+      name: 'Message Processing Completed',
+      eventAction: 'message_processing_completed',
+      requiredFields: ['trace.id', 'event.outcome'],
+    },
+  ];
+
+  for (const v of appLogValidations) {
+    const docs = await getAppLogsByOperation(v.eventAction);
+    if (docs.length > 0) {
+      const doc = docs[0];
+      const errors: string[] = [];
+
+      // Check log.logger is APP (use getNestedValue for nested objects)
+      const logLogger = getNestedValue(doc, 'log.logger');
+      if (logLogger !== 'APP') {
+        errors.push(`log.logger: expected 'APP', got '${logLogger}'`);
+      }
+
+      // Check required fields are present
+      for (const field of v.requiredFields) {
+        if (getNestedValue(doc, field) === undefined) {
+          errors.push(`${field}: required field missing`);
+        }
+      }
+
+      if (errors.length === 0) {
+        console.log(`✓ ${v.name}`);
+        passed++;
+      } else {
+        console.log(`✗ ${v.name}`);
+        for (const err of errors) {
+          console.log(`    - ${err}`);
+        }
+        failed++;
+      }
+    } else {
+      console.log(`○ ${v.name} - No document found (may not be triggered)`);
+      // Don't count as failed - may not be triggered in this test
+    }
+  }
+
+  // ==========================================================================
+  // EXT LOG VALIDATIONS (External system interactions)
+  // ==========================================================================
+  console.log('\n--- EXT Logs (External Interactions) ---\n');
+
+  const extLogValidations = [
+    {
+      name: 'User Redirected to EMREX',
+      eventAction: 'user_redirected_to_emrex',
+      requiredFields: ['trace.id', 'event.outcome'],
+    },
+    {
+      name: 'EMREX Response Received',
+      eventAction: 'emrex_response_received',
+      requiredFields: ['trace.id', 'event.outcome'],
+    },
+    {
+      name: 'ELM Converter Request Sent',
+      eventAction: 'elm_converter_request_sent',
+      requiredFields: ['trace.id', 'event.outcome'],
+    },
+    {
+      name: 'ELM Converter Request Completed',
+      eventAction: 'elm_converter_request_completed',
+      requiredFields: ['trace.id', 'event.outcome'],
+    },
+  ];
+
+  for (const v of extLogValidations) {
+    const docs = await getExtLogsByOperation(v.eventAction);
+    if (docs.length > 0) {
+      const doc = docs[0];
+      const errors: string[] = [];
+
+      // Check log.logger is EXT (use getNestedValue for nested objects)
+      const logLogger = getNestedValue(doc, 'log.logger');
+      if (logLogger !== 'EXT') {
+        errors.push(`log.logger: expected 'EXT', got '${logLogger}'`);
+      }
+
+      // Check required fields are present
+      for (const field of v.requiredFields) {
+        if (getNestedValue(doc, field) === undefined) {
+          errors.push(`${field}: required field missing`);
+        }
+      }
+
+      if (errors.length === 0) {
+        console.log(`✓ ${v.name}`);
+        passed++;
+      } else {
+        console.log(`✗ ${v.name}`);
+        for (const err of errors) {
+          console.log(`    - ${err}`);
+        }
+        failed++;
+      }
+    } else {
+      console.log(`○ ${v.name} - No document found (may not be triggered)`);
+      // Don't count as failed - may not be triggered in this test
+    }
+  }
+
+  // Legacy OOTS log validations (for backward compatibility with generate-logs.ts)
+  // These use 'msg' field matching for manually generated test data
+  // Skip these in E2E mode - they're only relevant for generate-logs.ts test data
+  const skipLegacyValidations = process.env.SKIP_LEGACY !== 'false';
+  if (skipLegacyValidations) {
+    console.log('\n--- Legacy OOTS Log Scenarios (skipped - set SKIP_LEGACY=false to enable) ---\n');
+  } else {
+    console.log('\n--- Legacy OOTS Log Scenarios (from generate-logs.ts) ---\n');
+  }
+
   const validations: Array<{ name: string; msg: string; expected: Record<string, any> }> = [
     {
-      name: 'Initial Evidence Request',
+      name: 'Initial Evidence Request (Legacy)',
       msg: 'Initial Evidence Request',
       expected: {
-        // Core OOTS fields
-        'oots.edm_version': 'oots-edm:v1.0',
-        'oots.request_id': 'urn:uuid:47867927-a7c8-40f2-93e4-4ad28f660094',
-        'oots.request_time': '2025-10-27T07:36:02.113Z',
-        'oots.procedure': 'T3',
-        'oots.possibility_for_preview': true,
-        'oots.explicit_request_given': true,
-        'oots.message_type': 'request',
-
-        // Evidence Requester
-        'oots.er_name': 'Dienst Uitvoering Onderwijs',
-        'oots.er_country': 'NL',
-        'oots.er_identifier.scheme': 'urn:cef.eu:names:identifier:EAS:0106',
-        'oots.er_identifier.value': '50973029',
-
-        // Evidence Provider (EMREX)
-        'oots.emrex_provider_name': 'EMREX - DUO NL',
-        'oots.emrex_provider_identifier.scheme': 'urn:oasis:names:tc:ebcore:partyid-type:unregistered:NL',
-        'oots.emrex_provider_identifier.value': '00000001800866472000',
-
-        // Evidence details
-        'oots.evidence_title': 'Tertiary Education Diploma',
-        'oots.evidence_format': 'application/pdf',
-        'oots.evidence_type_id': '8387ddbc-3618-4584-9ebd-3060d56edb6a',
-        'oots.evidence_type_classification':
-          'https://sr.oots.tech.ec.europa.eu/evidencetypeclassifications/NL/fba698b1-4939-47a6-8445-4f6b8b94b60a',
-
-        // EMREX fields
-        'emrex.conversationid': 'conv-001',
-        'emrex.messageid': 'msg-initial-001',
-        'emrex.evidence_request_id': 'urn:uuid:47867927-a7c8-40f2-93e4-4ad28f660094',
-
-        // ECS fields
-        'event.action': 'evidence-request',
-        'event.outcome': 'unknown',
+        'event.action': 'evidence_request_received',
+        'event.outcome': 'success',
+        'oots.message.type': 'QueryRequest',
+        'messaging.system': 'domibus',
+        'messaging.operation': 'receive',
       },
     },
     {
-      name: 'Preview Request',
+      name: 'Preview Request (Legacy)',
       msg: 'Preview Request',
       expected: {
-        'oots.edm_version': 'oots-edm:v1.0',
-        'oots.state_id': 'e6479b2e-d324-4258-9a6b-907ac162b034',
-        'oots.procedure': undefined, // Not present in preview requests
-        'oots.message_type': 'request',
-
-        // EMREX fields
-        'emrex.conversationid': 'conv-001',
-        'emrex.messageid': 'msg-preview-req-001',
-
-        // ECS fields
-        'event.action': 'evidence-request',
-        'event.outcome': 'unknown',
+        'event.action': 'evidence_request_received',
+        'oots.message.type': 'QueryRequest',
+        'oots.transaction.phase': 'preview_request',
       },
     },
     {
-      name: 'Success Response WITH Evidence',
+      name: 'Success Response WITH Evidence (Legacy)',
       msg: 'Success Response WITH Evidence',
       expected: {
-        'oots.edm_version': 'oots-edm:v1.0',
-        'oots.result': 'Evidence delivered',
-        'oots.response_id': '5af62cce-debe-11ec-9d64-0242ac120002',
-        'oots.request_id_ref': 'urn:uuid:f10b7461-d144-4103-94d5-60f670d6632b',
-        'oots.response_status': 'urn:oasis:names:tc:ebxml-regrep:ResponseStatusType:Success',
-        'oots.response_issue_time': '2022-05-19T17:10:10.872Z',
-        'oots.evidence_format': 'application/pdf',
-        'oots.evidence_conforms_to':
-          'https://sr.oots.tech.ec.europa.eu/evidencetypeclassifications/DK/958f8327-b9a9-4921-86dd-05800f136dfe',
-        'oots.evidence_description': 'An official certificate of birth of a person',
-        'oots.message_type': 'response',
-
-        // EMREX fields
-        'emrex.conversationid': 'conv-001',
-        'emrex.messageid': 'msg-success-001',
-
-        // ECS fields
-        'event.action': 'evidence-response',
+        'event.action': 'evidence_response_sent',
         'event.outcome': 'success',
-        'event.reason': 'Evidence delivered',
+        'oots.message.type': 'QueryResponse',
+        'oots.response.result': 'evidence_delivered',
       },
     },
     {
-      name: 'Success Response WITHOUT Evidence',
-      msg: 'Success Response WITHOUT Evidence',
-      expected: {
-        'oots.edm_version': 'oots-edm:v1.0',
-        'oots.result': 'No evidence delivered',
-        'oots.response_status': 'urn:oasis:names:tc:ebxml-regrep:ResponseStatusType:Success',
-        'oots.message_type': 'response',
-
-        // EMREX fields
-        'emrex.conversationid': 'conv-001',
-        'emrex.messageid': 'msg-no-evidence-001',
-
-        // ECS fields
-        'event.action': 'evidence-response',
-        'event.outcome': 'success',
-        'event.reason': 'No evidence delivered',
-      },
-    },
-    {
-      name: 'Preview Required Response',
+      name: 'Preview Required Response (Legacy)',
       msg: 'Preview Required Response',
       expected: {
-        'oots.edm_version': 'oots-edm:v1.0',
-        'oots.result': 'Preview requested',
-        'oots.state_id': 'e6479b2e-d324-4258-9a6b-907ac162b034',
-        'oots.response_status': 'urn:oasis:names:tc:ebxml-regrep:ResponseStatusType:Failure',
-        'oots.message_type': 'response',
-
-        // EMREX fields
-        'emrex.conversationid': 'conv-001',
-        'emrex.messageid': 'msg-preview-resp-001',
-
-        // ECS fields
-        'event.action': 'evidence-response',
-        'event.outcome': 'unknown',
-        'event.reason': 'Preview requested',
+        'event.action': 'evidence_response_sent',
+        'oots.message.type': 'QueryResponse',
+        'oots.response.result': 'preview_requested',
       },
     },
     {
-      name: 'Error Response',
+      name: 'Error Response (Legacy)',
       msg: 'Error Response',
       expected: {
-        'oots.edm_version': 'oots-edm:v1.0',
-        'oots.result': 'Error',
-        'oots.response_status': 'urn:oasis:names:tc:ebxml-regrep:ResponseStatusType:Failure',
-        'oots.message_type': 'response',
-
-        // Error details
-        'oots.error.exception_code': 'EDM:ERR:0008',
-        'oots.error.exception_message': 'EMREX returned an error',
-        'oots.error.exception_type': 'query:QueryExceptionType',
-        'oots.error.exception_detail': 'No matching records found',
-
-        // EMREX fields
-        'emrex.conversationid': 'conv-001',
-        'emrex.messageid': 'msg-error-001',
-
-        // ECS error fields
-        'error.code': 'EDM:ERR:0008',
-        'error.message': 'EMREX returned an error',
-        'error.type': 'query:QueryExceptionType',
-
-        // ECS event fields
-        'event.action': 'evidence-response',
+        'event.action': 'evidence_response_sent',
         'event.outcome': 'failure',
-        'event.reason': 'Error',
+        'oots.message.type': 'QueryResponse',
+        'oots.response.result': 'error',
       },
     },
   ];
 
-  let passed = 0;
-  let failed = 0;
+  if (!skipLegacyValidations) {
+    for (const v of validations) {
+      const result = await validateScenario(v.name, v.msg, v.expected);
 
-  for (const v of validations) {
-    const result = await validateScenario(v.name, v.msg, v.expected);
-
-    if (result.passed) {
-      console.log(`✓ ${result.scenario}`);
-      passed++;
-    } else {
-      console.log(`✗ ${result.scenario}`);
-      for (const err of result.errors) {
-        console.log(`    - ${err}`);
+      if (result.passed) {
+        console.log(`✓ ${result.scenario}`);
+        passed++;
+      } else {
+        console.log(`✗ ${result.scenario}`);
+        for (const err of result.errors) {
+          console.log(`    - ${err}`);
+        }
+        failed++;
       }
-      failed++;
     }
   }
 

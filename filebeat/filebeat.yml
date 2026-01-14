@@ -1,12 +1,43 @@
 # Filebeat configuration for OOTS E2E Testing
-# Collects OOTS structured logs from Bridge and ships to Elasticsearch
+# Collects all Bridge logs (APP, EXT, OOTS) from log files
 
 filebeat.inputs:
+  # APP logs - operational events
+  - type: log
+    id: app-logs
+    enabled: true
+    paths:
+      - /var/log/bridge/app-logs.log
+    json:
+      keys_under_root: true
+      overwrite_keys: true
+      add_error_key: true
+      expand_keys: true
+    fields:
+      log.source: oots-bridge
+    fields_under_root: true
+
+  # OOTS logs - protocol messages
   - type: log
     id: oots-logs
     enabled: true
     paths:
       - /var/log/bridge/oots-logs.log
+    json:
+      keys_under_root: true
+      overwrite_keys: true
+      add_error_key: true
+      expand_keys: true
+    fields:
+      log.source: oots-bridge
+    fields_under_root: true
+
+  # EXT logs - external service events (EMREX)
+  - type: log
+    id: ext-logs
+    enabled: true
+    paths:
+      - /var/log/bridge/ext-logs.log
     json:
       keys_under_root: true
       overwrite_keys: true
