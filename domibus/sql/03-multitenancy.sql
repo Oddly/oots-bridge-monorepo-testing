@@ -1,0 +1,32 @@
+-- Add multi-tenancy table required by Domibus
+-- This table is used for user-domain mapping even in single-tenant mode
+
+CREATE TABLE IF NOT EXISTS TB_USER_DOMAIN (
+  ID_PK BIGINT NOT NULL AUTO_INCREMENT,
+  USER_NAME VARCHAR(255) NOT NULL,
+  DOMAIN VARCHAR(50) DEFAULT 'default',
+  PREFERRED_DOMAIN VARCHAR(50) DEFAULT 'default',
+  CREATION_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  MODIFICATION_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  CREATED_BY VARCHAR(255),
+  MODIFIED_BY VARCHAR(255),
+  PRIMARY KEY (ID_PK),
+  UNIQUE KEY UK_USER_NAME (USER_NAME)
+);
+
+-- Add missing ROLE_AP_ADMIN role required for super user in Domibus 5.1
+INSERT IGNORE INTO TB_USER_ROLE (ID_PK, ROLE_NAME) VALUES ('197001010000000003', 'ROLE_AP_ADMIN');
+
+-- Audit table for TB_USER_DOMAIN (required by Domibus)
+CREATE TABLE IF NOT EXISTS TB_USER_DOMAIN_AUD (
+  ID_PK BIGINT NOT NULL,
+  REV BIGINT NOT NULL,
+  REVTYPE TINYINT,
+  USER_NAME VARCHAR(255),
+  DOMAIN VARCHAR(50),
+  PREFERRED_DOMAIN VARCHAR(50),
+  PRIMARY KEY (ID_PK, REV)
+);
+
+-- User mappings will be created automatically by Domibus during initialization
+-- The table has default values for DOMAIN and PREFERRED_DOMAIN columns

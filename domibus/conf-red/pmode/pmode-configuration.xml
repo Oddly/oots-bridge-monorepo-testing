@@ -1,0 +1,148 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Domibus PMode Configuration for red_gw (OOTS E2E Testing - Domibus 5.1+)
+-->
+<db:configuration xmlns:db="http://domibus.eu/configuration" party="red_gw">
+
+    <mpcs>
+        <mpc name="defaultMpc"
+             qualifiedName="http://docs.oasis-open.org/ebxml-msg/ebms/v3.0/ns/core/200704/defaultMPC"
+             enabled="true"
+             default="true"
+             retention_downloaded="0"
+             retention_undownloaded="14400"/>
+    </mpcs>
+
+    <businessProcesses>
+        <!-- Roles must come first -->
+        <roles>
+            <role name="defaultInitiatorRole" value="http://docs.oasis-open.org/ebxml-msg/ebms/v3.0/ns/core/200704/initiator"/>
+            <role name="defaultResponderRole" value="http://docs.oasis-open.org/ebxml-msg/ebms/v3.0/ns/core/200704/responder"/>
+        </roles>
+
+        <parties>
+            <partyIdTypes>
+                <partyIdType name="partyTypeUrn" value="urn:oasis:names:tc:ebcore:partyid-type:unregistered"/>
+            </partyIdTypes>
+            <party name="blue_gw" endpoint="http://domibus-blue:8080/domibus/services/msh">
+                <identifier partyId="blue_gw" partyIdType="partyTypeUrn"/>
+            </party>
+            <party name="red_gw" endpoint="http://domibus-red:8080/domibus/services/msh">
+                <identifier partyId="red_gw" partyIdType="partyTypeUrn"/>
+            </party>
+        </parties>
+
+        <meps>
+            <mep name="oneway" value="http://docs.oasis-open.org/ebxml-msg/ebms/v3.0/ns/core/200704/oneWay"/>
+            <binding name="push" value="http://docs.oasis-open.org/ebxml-msg/ebms/v3.0/ns/core/200704/push"/>
+        </meps>
+
+        <!-- propertySet must be inside properties -->
+        <properties>
+            <property name="originalSenderProperty" key="originalSender" datatype="string" required="true"/>
+            <property name="finalRecipientProperty" key="finalRecipient" datatype="string" required="true"/>
+            <propertySet name="ootsPropertySet">
+                <propertyRef property="originalSenderProperty"/>
+                <propertyRef property="finalRecipientProperty"/>
+            </propertySet>
+        </properties>
+
+        <payloadProfiles>
+            <payload name="ootsPayload" cid="cid:message" required="true" mimeType="application/x-ebrs+xml"/>
+            <payloadProfile name="ootsProfile" maxSize="40894464">
+                <attachment name="ootsPayload"/>
+            </payloadProfile>
+        </payloadProfiles>
+
+        <securities>
+            <security name="eDeliveryAS4Policy" policy="eDeliveryAS4Policy.xml" signatureMethod="RSA_SHA256"/>
+        </securities>
+
+        <errorHandlings>
+            <errorHandling name="ootsErrorHandling"
+                           errorAsResponse="true"
+                           businessErrorNotifyProducer="false"
+                           businessErrorNotifyConsumer="false"
+                           deliveryFailureNotifyProducer="false"/>
+        </errorHandlings>
+
+        <agreements>
+            <agreement name="ootsAgreement" value="urn:oots:agreement" type="urn:oots"/>
+        </agreements>
+
+        <services>
+            <service name="ootsService" value="urn:oots:services:evidence" type="urn:oots"/>
+        </services>
+
+        <actions>
+            <action name="executeQueryRequest" value="ExecuteQueryRequest"/>
+            <action name="executeQueryResponse" value="ExecuteQueryResponse"/>
+            <action name="exceptionResponse" value="ExceptionResponse"/>
+        </actions>
+
+        <as4>
+            <receptionAwareness name="receptionAwareness" retry="12;4;CONSTANT" duplicateDetection="true"/>
+            <reliability name="ootsReliability" nonRepudiation="false" replyPattern="response"/>
+        </as4>
+
+        <legConfigurations>
+            <legConfiguration name="queryRequestLeg"
+                              service="ootsService"
+                              action="executeQueryRequest"
+                              defaultMpc="defaultMpc"
+                              reliability="ootsReliability"
+                              security="eDeliveryAS4Policy"
+                              receptionAwareness="receptionAwareness"
+                              propertySet="ootsPropertySet"
+                              payloadProfile="ootsProfile"
+                              errorHandling="ootsErrorHandling"
+                              compressPayloads="true"/>
+
+            <legConfiguration name="queryResponseLeg"
+                              service="ootsService"
+                              action="executeQueryResponse"
+                              defaultMpc="defaultMpc"
+                              reliability="ootsReliability"
+                              security="eDeliveryAS4Policy"
+                              receptionAwareness="receptionAwareness"
+                              propertySet="ootsPropertySet"
+                              payloadProfile="ootsProfile"
+                              errorHandling="ootsErrorHandling"
+                              compressPayloads="true"/>
+        </legConfigurations>
+
+        <process name="ootsQueryProcess"
+                 agreement="ootsAgreement"
+                 mep="oneway"
+                 binding="push"
+                 initiatorRole="defaultInitiatorRole"
+                 responderRole="defaultResponderRole">
+            <initiatorParties>
+                <initiatorParty name="red_gw"/>
+            </initiatorParties>
+            <responderParties>
+                <responderParty name="blue_gw"/>
+            </responderParties>
+            <legs>
+                <leg name="queryRequestLeg"/>
+            </legs>
+        </process>
+
+        <process name="ootsResponseProcess"
+                 agreement="ootsAgreement"
+                 mep="oneway"
+                 binding="push"
+                 initiatorRole="defaultInitiatorRole"
+                 responderRole="defaultResponderRole">
+            <initiatorParties>
+                <initiatorParty name="blue_gw"/>
+            </initiatorParties>
+            <responderParties>
+                <responderParty name="red_gw"/>
+            </responderParties>
+            <legs>
+                <leg name="queryResponseLeg"/>
+            </legs>
+        </process>
+    </businessProcesses>
+</db:configuration>

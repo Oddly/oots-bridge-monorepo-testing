@@ -1,0 +1,323 @@
+# OOTS Full E2E Stack with Red/Blue Domibus Gateways
+#
+# This file contains the complete E2E testing environment:
+# - Blue Domibus Gateway (Evidence Provider side)
+# - Red Domibus Gateway (Evidence Requester side)
+# - Mock EMREX Provider
+# - OOTS Bridge
+# - Elasticsearch + Kibana for log analysis
+#
+# Usage:
+#   task e2e:start   # Start everything with single command
+#
+# Architecture:
+#   Red Gateway (Requester) ─────▶ Blue Gateway (Provider)
+#         │                              │
+#         │                              ▼
+#         │                        OOTS Bridge
+#         │                              │
+#         │                              ▼
+#         │                        Mock EMREX
+#         │                              │
+#         ◀─────────────────────────────┘
+#                   (Response)
+
+services:
+  # ===========================================================================
+  # ActiveMQ Brokers (required for Domibus JMS messaging)
+  # ===========================================================================
+
+  activemq-blue:
+    image: apache/activemq-artemis:2.31.2
+    container_name: activemq-blue
+    environment:
+      ARTEMIS_USER: admin
+      ARTEMIS_PASSWORD: admin
+      ANONYMOUS_LOGIN: "true"
+      AMQ_EXTRA_ARGS: "--nio"
+    ports:
+      - "61616:61616"
+      - "8161:8161"
+    networks:
+      - oots-e2e-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8161/console/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  activemq-red:
+    image: apache/activemq-artemis:2.31.2
+    container_name: activemq-red
+    environment:
+      ARTEMIS_USER: admin
+      ARTEMIS_PASSWORD: admin
+      ANONYMOUS_LOGIN: "true"
+      AMQ_EXTRA_ARGS: "--nio"
+    ports:
+      - "61617:61616"
+      - "8162:8161"
+    networks:
+      - oots-e2e-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8161/console/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # ===========================================================================
+  # Blue Domibus Gateway (Evidence Provider side)
+  # ===========================================================================
+
+  mysql-blue:
+    image: mysql:8.0
+    container_name: mysql-blue
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: domibus
+      MYSQL_USER: edelivery
+      MYSQL_PASSWORD: edelivery
+    volumes:
+      - mysql-blue-data:/var/lib/mysql
+      - ./domibus/sql/init-db-blue.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+      - ./domibus/sql/mysql-5.1.9.ddl:/docker-entrypoint-initdb.d/02-schema.sql:ro
+      - ./domibus/sql/mysql-5.1.9-data.ddl:/docker-entrypoint-initdb.d/03-data.sql:ro
+      - ./domibus/sql/04-additional-data.sql:/docker-entrypoint-initdb.d/04-additional-data.sql:ro
+    command: --character-set-server=utf8 --collation-server=utf8_unicode_ci
+    networks:
+      - oots-e2e-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-proot"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  domibus-blue:
+    image: tanzari/domibus:latest
+    container_name: domibus-blue
+    environment:
+      DOMIBUS_DB_SERVERNAME: mysql-blue
+      domibus.database.serverName: mysql-blue
+      domibus.datasource.user: edelivery
+      domibus.datasource.password: edelivery
+      # ActiveMQ configuration
+      activeMQ.broker.host: activemq-blue
+      activeMQ.brokerName: activemq-blue
+      JAVA_OPTS: "-Xms512m -Xmx1g -Ddomibus.config.location=/usr/local/tomcat/conf/domibus -Ddomibus.database.serverName=mysql-blue -DactiveMQ.broker.host=activemq-blue -DactiveMQ.transportConnector.uri=tcp://activemq-blue:61616"
+    volumes:
+      - ./domibus/conf:/usr/local/tomcat/conf/domibus:ro
+      - domibus-blue-data:/usr/local/tomcat/domibus/data
+    ports:
+      - "8180:8080"
+    depends_on:
+      mysql-blue:
+        condition: service_healthy
+      activemq-blue:
+        condition: service_healthy
+    networks:
+      - oots-e2e-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/domibus"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 180s
+
+  # ===========================================================================
+  # Red Domibus Gateway (Evidence Requester side)
+  # ===========================================================================
+
+  mysql-red:
+    image: mysql:8.0
+    container_name: mysql-red
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: domibus
+      MYSQL_USER: edelivery
+      MYSQL_PASSWORD: edelivery
+    volumes:
+      - mysql-red-data:/var/lib/mysql
+      - ./domibus/sql/init-db-red.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+      - ./domibus/sql/mysql-5.1.9.ddl:/docker-entrypoint-initdb.d/02-schema.sql:ro
+      - ./domibus/sql/mysql-5.1.9-data.ddl:/docker-entrypoint-initdb.d/03-data.sql:ro
+      - ./domibus/sql/04-additional-data.sql:/docker-entrypoint-initdb.d/04-additional-data.sql:ro
+    command: --character-set-server=utf8 --collation-server=utf8_unicode_ci
+    networks:
+      - oots-e2e-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-proot"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  domibus-red:
+    image: tanzari/domibus:latest
+    container_name: domibus-red
+    environment:
+      DOMIBUS_DB_SERVERNAME: mysql-red
+      domibus.database.serverName: mysql-red
+      domibus.datasource.user: edelivery
+      domibus.datasource.password: edelivery
+      # ActiveMQ configuration
+      activeMQ.broker.host: activemq-red
+      activeMQ.brokerName: activemq-red
+      JAVA_OPTS: "-Xms512m -Xmx1g -Ddomibus.config.location=/usr/local/tomcat/conf/domibus -Ddomibus.database.serverName=mysql-red -DactiveMQ.broker.host=activemq-red -DactiveMQ.transportConnector.uri=tcp://activemq-red:61616"
+    volumes:
+      - ./domibus/conf-red:/usr/local/tomcat/conf/domibus:ro
+      - domibus-red-data:/usr/local/tomcat/domibus/data
+    ports:
+      - "8280:8080"
+    depends_on:
+      mysql-red:
+        condition: service_healthy
+      activemq-red:
+        condition: service_healthy
+    networks:
+      - oots-e2e-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/domibus"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 180s
+
+  # ===========================================================================
+  # Mock EMREX Provider
+  # ===========================================================================
+
+  mock-emrex:
+    build:
+      context: .
+      dockerfile: Dockerfile.mocks
+    container_name: mock-emrex
+    command: ["npx", "tsx", "mocks/mock-emrex-provider.ts"]
+    environment:
+      - MOCK_EMREX_PORT=9081
+      - BRIDGE_STORE_URL=http://bridge:3003/store
+    ports:
+      - "9081:9081"
+    networks:
+      - oots-e2e-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9081/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ===========================================================================
+  # OOTS Bridge (connects to Blue Gateway)
+  # ===========================================================================
+
+  bridge:
+    image: oots-bridge:latest
+    container_name: oots-bridge
+    environment:
+      # Connect to Blue Domibus Gateway
+      - DOMIBUS_ACCESS_POINT=http://domibus-blue:8080/domibus/services/wsplugin
+      - DOMIBUS_USERNAME=admin
+      - DOMIBUS_PASSWORD=123456
+      # Bridge identity
+      - PARTY_ID=blue_gw
+      # Frontend URL
+      - BRIDGE_FRONTEND_URL=http://localhost:3003
+      # EMREX providers - point to mock
+      - EMREX_DATA_PROVIDERS={"00000001800866472000":"http://mock-emrex:9081/emrex"}
+      # Certificate endpoint
+      - CERTIFICATE_FETCH_ENDPOINT=http://mock-emrex:9081/certificates
+      # Logging - send to file for collection
+      - APP_LOGS_USE_FILE=false
+      - OOTS_LOGS_USE_FILE=true
+      - OOTS_LOGS_PATH=/app/logs/oots.log
+      - EXT_LOGS_USE_FILE=false
+      # Polling
+      - DOMIBUS_POLLING_INTERVAL=2
+      # Timeouts
+      - REDIRECT_TIMEOUT_IN_MINUTES=16
+      - PREVIEW_SPACE_TIMEOUT_IN_MINUTES=40
+      - CERTIFICATE_REFRESH_INTERVAL=3600
+    ports:
+      - "3003:3003"
+    depends_on:
+      domibus-blue:
+        condition: service_healthy
+      mock-emrex:
+        condition: service_healthy
+    networks:
+      - oots-e2e-network
+    volumes:
+      - bridge-logs:/app/logs
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3003/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ===========================================================================
+  # Elasticsearch + Kibana (Log Analysis)
+  # ===========================================================================
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.0
+    container_name: es-e2e
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    ports:
+      - "9200:9200"
+    volumes:
+      - es-e2e-data:/usr/share/elasticsearch/data
+    networks:
+      - oots-e2e-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:9200/_cluster/health | grep -q '\"status\":\"green\"\\|\"status\":\"yellow\"'"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.15.0
+    container_name: kibana-e2e
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    ports:
+      - "5601:5601"
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    networks:
+      - oots-e2e-network
+
+  # ===========================================================================
+  # Filebeat (Log Shipper)
+  # ===========================================================================
+
+  filebeat:
+    image: docker.elastic.co/beats/filebeat:8.15.0
+    container_name: filebeat-e2e
+    user: root
+    command: filebeat -e -strict.perms=false
+    volumes:
+      - ./filebeat/filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
+      - bridge-logs:/var/log/bridge:ro
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      bridge:
+        condition: service_healthy
+    networks:
+      - oots-e2e-network
+
+networks:
+  oots-e2e-network:
+    driver: bridge
+
+volumes:
+  mysql-blue-data:
+  mysql-red-data:
+  domibus-blue-data:
+  domibus-red-data:
+  bridge-logs:
+  es-e2e-data:

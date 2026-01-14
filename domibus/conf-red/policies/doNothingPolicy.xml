@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    doNothing Security Policy
+    No signing or encryption - for testing only
+-->
+<wsp:Policy xmlns:wsp="http://www.w3.org/ns/ws-policy"
+            xmlns:sp="http://docs.oasis-open.org/ws-sx/ws-securitypolicy/200702">
+    <wsp:ExactlyOne>
+        <wsp:All/>
+    </wsp:ExactlyOne>
+</wsp:Policy>

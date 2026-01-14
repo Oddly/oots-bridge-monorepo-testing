@@ -1,0 +1,151 @@
+# Real Domibus AS4 Gateway for E2E Testing
+# Based on EU eDelivery Domibus reference implementation
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.domibus.yml up -d
+#
+# Domibus Admin Console: http://localhost:8080/domibus
+# Default credentials: admin / 123456
+
+services:
+  # MySQL Database for Domibus
+  domibus-mysql:
+    image: mysql:8.0
+    container_name: domibus-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: domibus
+      MYSQL_USER: edelivery
+      MYSQL_PASSWORD: edelivery
+    volumes:
+      - domibus-mysql-data:/var/lib/mysql
+      - ./domibus/init-db.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      - "3306:3306"
+    networks:
+      - oots-logging-test-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-proot"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ActiveMQ Message Broker
+  domibus-activemq:
+    image: apache/activemq-artemis:2.31.2
+    container_name: domibus-activemq
+    environment:
+      ARTEMIS_USER: artemis
+      ARTEMIS_PASSWORD: artemis
+      ANONYMOUS_LOGIN: "false"
+    volumes:
+      - domibus-activemq-data:/var/lib/artemis-instance
+    ports:
+      - "61616:61616"  # OpenWire
+      - "8161:8161"    # Web Console
+    networks:
+      - oots-logging-test-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8161/console"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # Domibus AS4 Gateway
+  domibus:
+    image: tanzari/domibus:latest
+    container_name: domibus
+    environment:
+      # Database (tanzari/domibus format)
+      DOMIBUS_DB_SERVERNAME: domibus-mysql
+      domibus.database.serverName: domibus-mysql
+      domibus.datasource.user: edelivery
+      domibus.datasource.password: edelivery
+      # JVM settings
+      JAVA_OPTS: "-Xms512m -Xmx1g -Ddomibus.config.location=/usr/local/tomcat/conf/domibus -Ddomibus.database.serverName=domibus-mysql"
+    volumes:
+      - ./domibus/conf:/usr/local/tomcat/conf/domibus:ro
+      - domibus-data:/usr/local/tomcat/domibus/data
+    ports:
+      - "8180:8080"
+    depends_on:
+      domibus-mysql:
+        condition: service_healthy
+    networks:
+      - oots-logging-test-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/domibus"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 180s
+
+  # Mock EMREX Provider (we keep this)
+  mock-emrex:
+    build:
+      context: .
+      dockerfile: Dockerfile.mocks
+    container_name: mock-emrex
+    command: ["tsx", "mocks/mock-emrex-provider.ts"]
+    environment:
+      - MOCK_EMREX_PORT=9081
+      - BRIDGE_STORE_URL=http://bridge:3003/store
+    ports:
+      - "9081:9081"
+    networks:
+      - oots-logging-test-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9081/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # Bridge backend
+  bridge:
+    image: oots-bridge:latest
+    container_name: oots-bridge
+    environment:
+      # Real Domibus
+      - DOMIBUS_ACCESS_POINT=http://domibus:8080/domibus/services/wsplugin
+      - DOMIBUS_USERNAME=admin
+      - DOMIBUS_PASSWORD=123456
+      # Bridge identity
+      - PARTY_ID=bridge-e2e-test
+      # Frontend URL
+      - BRIDGE_FRONTEND_URL=http://localhost:3003
+      # EMREX providers - point to mock
+      - EMREX_DATA_PROVIDERS={"00000001800866472000":"http://mock-emrex:9081/emrex"}
+      # Certificate endpoint (we'll create a simple mock for this)
+      - CERTIFICATE_FETCH_ENDPOINT=http://mock-emrex:9081/certificates
+      # Logging
+      - APP_LOGS_USE_FILE=false
+      - OOTS_LOGS_USE_FILE=true
+      - EXT_LOGS_USE_FILE=false
+      # Polling
+      - DOMIBUS_POLLING_INTERVAL=2
+      # Timeouts
+      - REDIRECT_TIMEOUT_IN_MINUTES=16
+      - PREVIEW_SPACE_TIMEOUT_IN_MINUTES=40
+      - CERTIFICATE_REFRESH_INTERVAL=3600
+    ports:
+      - "3003:3003"
+    depends_on:
+      domibus:
+        condition: service_healthy
+      mock-emrex:
+        condition: service_healthy
+    networks:
+      - oots-logging-test-network
+    volumes:
+      - bridge-logs:/app/logs
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3003/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  domibus-mysql-data:
+  domibus-activemq-data:
+  domibus-data:
+  bridge-logs:

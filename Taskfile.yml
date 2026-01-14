@@ -1,0 +1,241 @@
+# https://taskfile.dev
+version: "3"
+
+vars:
+  BRIDGE_REPO: ../oots-bridge-monorepo
+
+tasks:
+  default:
+    desc: "Show available tasks"
+    cmds:
+      - task --list
+
+  # ==========================================================================
+  # Setup Tasks
+  # ==========================================================================
+
+  setup:
+    desc: "Run all setup tasks (keystores + domibus + bridge image)"
+    cmds:
+      - task: setup:keystores
+      - task: setup:domibus
+      - task: setup:bridge-image
+
+  setup:keystores:
+    desc: "Generate Domibus keystores for blue and red gateways"
+    dir: domibus/scripts
+    cmds:
+      - ./generate-keystores.sh
+    status:
+      - test -f ../conf/keystores/gateway_keystore.jks
+      - test -f ../conf-red/keystores/gateway_keystore.jks
+
+  setup:domibus:
+    desc: "Download Domibus DDL and WS plugin"
+    cmds:
+      - ./scripts/setup-e2e.sh
+    status:
+      - test -f domibus/sql/mysql-5.1.9.ddl
+      - test -f domibus/conf/plugins/lib/domibus-default-ws-plugin-5.1.9.jar
+
+  setup:bridge-image:
+    desc: "Build bridge image from feature branch"
+    dir: "{{.BRIDGE_REPO}}"
+    cmds:
+      - echo "Building monorepo base image..."
+      - docker build -t oots-emrex/monorepo:latest -f Dockerfile .
+      - echo "Building bridge backend image..."
+      - docker build -t oots-bridge:latest -f apps/bridge/backend/Dockerfile .
+
+  # ==========================================================================
+  # Full E2E Stack (Red/Blue Domibus + Bridge + ELK)
+  # ==========================================================================
+
+  e2e:start:
+    desc: "Start complete E2E stack with single command"
+    deps: [setup:keystores, setup:domibus]
+    cmds:
+      - echo "Starting OOTS E2E Stack..."
+      - docker compose -f docker-compose.e2e.yml up -d
+      - echo ""
+      - echo "Waiting for services to be healthy..."
+      - |
+        echo "This may take 2-3 minutes for Domibus to initialize..."
+        for i in $(seq 1 36); do
+          BLUE_HEALTHY=$(docker inspect --format='{{.State.Health.Status}}' domibus-blue 2>/dev/null || echo "starting")
+          RED_HEALTHY=$(docker inspect --format='{{.State.Health.Status}}' domibus-red 2>/dev/null || echo "starting")
+          ES_HEALTHY=$(docker inspect --format='{{.State.Health.Status}}' es-e2e 2>/dev/null || echo "starting")
+
+          echo "  Blue Gateway: $BLUE_HEALTHY | Red Gateway: $RED_HEALTHY | Elasticsearch: $ES_HEALTHY"
+
+          if [ "$BLUE_HEALTHY" = "healthy" ] && [ "$RED_HEALTHY" = "healthy" ] && [ "$ES_HEALTHY" = "healthy" ]; then
+            echo ""
+            echo "All services are healthy!"
+            break
+          fi
+
+          if [ $i -eq 36 ]; then
+            echo ""
+            echo "WARNING: Some services may not be fully ready yet."
+            echo "Check status with: task e2e:status"
+          fi
+
+          sleep 10
+        done
+      - task: e2e:setup-elasticsearch
+      - task: e2e:configure-domibus
+      - task: e2e:upload-pmodes
+      - |
+        echo ""
+        echo "=========================================="
+        echo "OOTS E2E Stack is ready!"
+        echo "=========================================="
+        echo ""
+        echo "Admin Consoles:"
+        echo "  Blue Gateway: http://localhost:8180/domibus"
+        echo "  Red Gateway:  http://localhost:8280/domibus"
+        echo "  Credentials:  admin / 123456"
+        echo ""
+        echo "Monitoring:"
+        echo "  Kibana:       http://localhost:5601"
+        echo "  Bridge:       http://localhost:3003"
+        echo ""
+        echo "Send test request:"
+        echo "  task e2e:trigger"
+
+  e2e:stop:
+    desc: "Stop E2E stack"
+    cmds:
+      - docker compose -f docker-compose.e2e.yml down
+
+  e2e:clean:
+    desc: "Remove all E2E volumes (fresh start)"
+    cmds:
+      - docker compose -f docker-compose.e2e.yml down -v
+      - rm -f domibus/conf/keystores/*.jks domibus/conf/keystores/*.cer
+      - rm -f domibus/conf-red/keystores/*.jks domibus/conf-red/keystores/*.cer
+
+  e2e:status:
+    desc: "Show E2E stack status"
+    cmds:
+      - docker compose -f docker-compose.e2e.yml ps
+
+  e2e:logs:
+    desc: "Follow all E2E logs"
+    cmds:
+      - docker compose -f docker-compose.e2e.yml logs -f
+
+  e2e:logs:blue:
+    desc: "Follow Blue Gateway logs"
+    cmds:
+      - docker compose -f docker-compose.e2e.yml logs -f domibus-blue
+
+  e2e:logs:red:
+    desc: "Follow Red Gateway logs"
+    cmds:
+      - docker compose -f docker-compose.e2e.yml logs -f domibus-red
+
+  e2e:logs:bridge:
+    desc: "Follow Bridge logs"
+    cmds:
+      - docker compose -f docker-compose.e2e.yml logs -f bridge
+
+  e2e:setup-elasticsearch:
+    desc: "Setup Elasticsearch with OOTS ingest pipeline"
+    cmds:
+      - ./scripts/setup-elasticsearch.sh
+
+  e2e:configure-domibus:
+    desc: "Configure Domibus users and roles"
+    cmds:
+      - ./scripts/configure-domibus.sh
+
+  e2e:upload-pmodes:
+    desc: "Upload PModes to both gateways via Playwright automation"
+    cmds:
+      - node scripts/upload-pmode-playwright.js
+
+  e2e:trigger:
+    desc: "Send a test OOTS request through the system"
+    cmds:
+      - ./scripts/trigger-request.sh
+
+  # ==========================================================================
+  # Legacy Single Domibus Stack (for backward compatibility)
+  # ==========================================================================
+
+  domibus:start:
+    desc: "Start single Domibus stack (legacy)"
+    deps: [setup:keystores]
+    cmds:
+      - docker compose -f docker-compose.yml -f docker-compose.domibus.yml up -d
+      - echo "Waiting for services to be healthy..."
+      - sleep 30
+      - docker compose -f docker-compose.yml -f docker-compose.domibus.yml ps
+
+  domibus:stop:
+    desc: "Stop single Domibus stack (legacy)"
+    cmds:
+      - docker compose -f docker-compose.yml -f docker-compose.domibus.yml down
+
+  domibus:logs:
+    desc: "Follow single Domibus logs"
+    cmds:
+      - docker compose -f docker-compose.yml -f docker-compose.domibus.yml logs -f domibus
+
+  domibus:clean:
+    desc: "Remove all single Domibus volumes"
+    cmds:
+      - docker compose -f docker-compose.yml -f docker-compose.domibus.yml down -v
+
+  # ==========================================================================
+  # Log Generation & Testing (State 3 Pipeline)
+  # ==========================================================================
+
+  generate-logs:
+    desc: "Generate test logs from structured logging functions"
+    cmds:
+      - npm run generate-logs
+    sources:
+      - scripts/generate-logs.ts
+      - "{{.BRIDGE_REPO}}/apps/bridge/backend/src/utils/oots-logs/*.ts"
+    generates:
+      - testdata/raw_logs.ndjson
+
+  test:pipeline:
+    desc: "Test ingest pipeline with generated logs"
+    deps: [generate-logs]
+    cmds:
+      - docker compose up -d elasticsearch
+      - echo "Waiting for Elasticsearch..."
+      - sleep 15
+      - |
+        curl -s -X PUT "http://localhost:9200/_ingest/pipeline/oots-state3-ecs" \
+          -H "Content-Type: application/json" \
+          -d @../oots-logging-states/state3-otel/pipeline/ingest-pipeline.json
+      - |
+        # Convert to bulk format and ingest
+        while IFS= read -r line; do
+          echo '{"index":{"_index":"oots-test"}}'
+          echo "$line"
+        done < testdata/raw_logs.ndjson > /tmp/bulk.ndjson
+        curl -s -X POST "http://localhost:9200/_bulk?pipeline=oots-state3-ecs" \
+          -H "Content-Type: application/x-ndjson" \
+          --data-binary @/tmp/bulk.ndjson | jq '{errors, items: (.items | length)}'
+      - |
+        echo "Verifying fields..."
+        curl -s "http://localhost:9200/oots-test/_search?size=1" | \
+          jq '.hits.hits[0]._source | {oots_result: .oots.result, event, transaction, messaging}'
+
+  # ==========================================================================
+  # Cleanup
+  # ==========================================================================
+
+  clean:
+    desc: "Clean up all containers, volumes, and generated files"
+    cmds:
+      - docker compose -f docker-compose.yml -f docker-compose.domibus.yml down -v 2>/dev/null || true
+      - docker compose -f docker-compose.e2e.yml down -v 2>/dev/null || true
+      - rm -f testdata/*.ndjson testdata/*.log
+      - rm -f domibus/conf/keystores/*.jks domibus/conf/keystores/*.cer
+      - rm -f domibus/conf-red/keystores/*.jks domibus/conf-red/keystores/*.cer

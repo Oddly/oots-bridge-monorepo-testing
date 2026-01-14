@@ -1,0 +1,50 @@
+# Filebeat configuration for OOTS E2E Testing
+# Collects OOTS structured logs from Bridge and ships to Elasticsearch
+
+filebeat.inputs:
+  - type: log
+    id: oots-logs
+    enabled: true
+    paths:
+      - /var/log/bridge/oots.log
+    json:
+      keys_under_root: true
+      overwrite_keys: true
+      add_error_key: true
+      expand_keys: true
+    fields:
+      log.source: oots-bridge
+    fields_under_root: true
+
+processors:
+  - timestamp:
+      field: time
+      layouts:
+        - '2006-01-02T15:04:05.000Z'
+        - '2006-01-02T15:04:05Z'
+      test:
+        - '2024-01-15T10:30:00.000Z'
+  - drop_fields:
+      fields: ["agent", "ecs", "host", "input"]
+      ignore_missing: true
+
+output.elasticsearch:
+  hosts: ["elasticsearch:9200"]
+  index: "oots-logs-%{+yyyy.MM.dd}"
+  pipelines:
+    - pipeline: "oots-state3-ecs"
+
+setup.template:
+  name: "oots-logs"
+  pattern: "oots-logs-*"
+  enabled: true
+  settings:
+    index:
+      number_of_shards: 1
+      number_of_replicas: 0
+
+setup.ilm:
+  enabled: false
+
+logging.level: info
+logging.to_files: false
