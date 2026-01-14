@@ -875,10 +875,48 @@ async function checkPrerequisites(): Promise<boolean> {
   return true;
 }
 
+function printServiceStatus(): void {
+  console.log('┌────────────────────────────────────────────────────────────┐');
+  console.log('│                    SERVICES AVAILABLE                      │');
+  console.log('├────────────────────────────────────────────────────────────┤');
+  console.log('│  Service              │ URL                    │ Status   │');
+  console.log('├───────────────────────┼────────────────────────┼──────────┤');
+  console.log('│  Blue Gateway (Prov)  │ http://localhost:8180  │ healthy  │');
+  console.log('│  Red Gateway (Req)    │ http://localhost:8280  │ healthy  │');
+  console.log('│  Bridge               │ http://localhost:3003  │ healthy  │');
+  console.log('│  Mock EMREX           │ http://localhost:9081  │ healthy  │');
+  console.log('│  Elasticsearch        │ http://localhost:9200  │ healthy  │');
+  console.log('│  Kibana               │ http://localhost:5601  │ ready    │');
+  console.log('├───────────────────────┴────────────────────────┴──────────┤');
+  console.log('│  Domibus credentials: admin / 123456                      │');
+  console.log('└────────────────────────────────────────────────────────────┘');
+}
+
+function printTestOverview(pathsToRun: TestPath[]): void {
+  console.log('┌────────────────────────────────────────────────────────────┐');
+  console.log('│                      TEST OVERVIEW                         │');
+  console.log('├────────────────────────────────────────────────────────────┤');
+
+  for (const path of pathsToRun) {
+    const idStr = `Path ${path.id}`.padEnd(8);
+    const name = path.name.substring(0, 45).padEnd(45);
+    console.log(`│  ${idStr} │ ${name} │`);
+  }
+
+  console.log('├────────────────────────────────────────────────────────────┤');
+  console.log(`│  Running ${pathsToRun.length} test path(s)                                    │`);
+  console.log('└────────────────────────────────────────────────────────────┘');
+  console.log('');
+}
+
 async function main() {
+  console.log('');
   console.log('╔════════════════════════════════════════════════════════════╗');
-  console.log('║     OOTS Bridge Path Coverage Tests                        ║');
-  console.log('╚════════════════════════════════════════════════════════════╝\n');
+  console.log('║         OOTS Bridge Path Coverage Tests                    ║');
+  console.log('║                                                            ║');
+  console.log('║  Validates structured logging across execution paths       ║');
+  console.log('╚════════════════════════════════════════════════════════════╝');
+  console.log('');
 
   // Parse args
   const args = process.argv.slice(2);
@@ -894,13 +932,17 @@ async function main() {
       console.error('Run: task e2e:start');
       process.exit(1);
     }
-    console.log('\nAll prerequisites OK\n');
+    console.log('');
+    printServiceStatus();
+    console.log('');
   }
 
   // Run tests
   const pathsToRun = selectedPath
     ? testPaths.filter((p) => p.id === selectedPath)
     : testPaths;
+
+  printTestOverview(pathsToRun);
 
   if (pathsToRun.length === 0) {
     console.error(`No test path found with ID ${selectedPath}`);
