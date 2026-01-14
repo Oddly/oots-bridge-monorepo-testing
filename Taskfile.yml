@@ -61,12 +61,14 @@ tasks:
       - echo "Waiting for services to be healthy..."
       - |
         echo "This may take 2-3 minutes for Domibus to initialize..."
-        for i in $(seq 1 36); do
-          BLUE_HEALTHY=$(docker inspect --format='{{.State.Health.Status}}' domibus-blue 2>/dev/null || echo "starting")
-          RED_HEALTHY=$(docker inspect --format='{{.State.Health.Status}}' domibus-red 2>/dev/null || echo "starting")
-          ES_HEALTHY=$(docker inspect --format='{{.State.Health.Status}}' es-e2e 2>/dev/null || echo "starting")
+        BLUE_RESTARTS=0
+        RED_RESTARTS=0
+        for i in $(seq 1 60); do
+          BLUE_HEALTHY=$(docker inspect --format='{{.State.Health.Status}}' domibus-blue 2>/dev/null || echo "missing")
+          RED_HEALTHY=$(docker inspect --format='{{.State.Health.Status}}' domibus-red 2>/dev/null || echo "missing")
+          ES_HEALTHY=$(docker inspect --format='{{.State.Health.Status}}' es-e2e 2>/dev/null || echo "missing")
 
-          echo "  Blue Gateway: $BLUE_HEALTHY | Red Gateway: $RED_HEALTHY | Elasticsearch: $ES_HEALTHY"
+          echo "[$i/60] Blue: $BLUE_HEALTHY | Red: $RED_HEALTHY | ES: $ES_HEALTHY"
 
           if [ "$BLUE_HEALTHY" = "healthy" ] && [ "$RED_HEALTHY" = "healthy" ] && [ "$ES_HEALTHY" = "healthy" ]; then
             echo ""
@@ -74,13 +76,25 @@ tasks:
             break
           fi
 
-          if [ $i -eq 36 ]; then
+          # Restart unhealthy Domibus containers (they don't auto-recover from MySQL race)
+          if [ "$BLUE_HEALTHY" = "unhealthy" ] && [ $BLUE_RESTARTS -lt 2 ]; then
+            echo "  Restarting domibus-blue..."
+            docker restart domibus-blue >/dev/null 2>&1
+            BLUE_RESTARTS=$((BLUE_RESTARTS + 1))
+          fi
+          if [ "$RED_HEALTHY" = "unhealthy" ] && [ $RED_RESTARTS -lt 2 ]; then
+            echo "  Restarting domibus-red..."
+            docker restart domibus-red >/dev/null 2>&1
+            RED_RESTARTS=$((RED_RESTARTS + 1))
+          fi
+
+          if [ $i -eq 60 ]; then
             echo ""
             echo "WARNING: Some services may not be fully ready yet."
             echo "Check status with: task e2e:status"
           fi
 
-          sleep 10
+          sleep 5
         done
       - task: e2e:setup-elasticsearch
       - task: e2e:setup-kibana
