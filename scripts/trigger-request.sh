@@ -1,6 +1,14 @@
 #!/bin/bash
-# Trigger an OOTS evidence request through the Red Gateway
-# This simulates an evidence requester sending a request to the evidence provider
+# Trigger a proper OOTS evidence request through the Red Gateway
+# This sends a valid OOTS QueryRequest that passes XSD and Schematron validation
+#
+# The message flow:
+#   Red Gateway -> Blue Gateway (AS4) -> Bridge -> PREVIEW_REQUIRED Response
+#
+# Prerequisites:
+#   - E2E stack running (task e2e:start)
+#   - PModes uploaded (automatically done by e2e:start)
+#   - testdata/sample-query-request.xml exists
 
 set -e
 
@@ -8,34 +16,30 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$SCRIPT_DIR/.."
 
 RED_GATEWAY_URL="${RED_GATEWAY_URL:-http://localhost:8280}"
-BLUE_GATEWAY_URL="${BLUE_GATEWAY_URL:-http://localhost:8180}"
 DOMIBUS_USER="${DOMIBUS_USER:-admin}"
 DOMIBUS_PASS="${DOMIBUS_PASS:-123456}"
 
-# Generate unique message ID and conversation ID
+# Generate unique IDs
+QUERY_UUID=$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid)
 MSG_UUID=$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid)
 CONV_UUID=$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid)
 TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%S.000Z")
 
-# Create the payload content (base64 encoded)
-PAYLOAD_CONTENT=$(cat <<'PAYLOADEOF'
-<?xml version="1.0" encoding="UTF-8"?>
-<QueryRequest xmlns="urn:oasis:names:tc:ebxml-regrep:xsd:query:4.0"
-              xmlns:rs="urn:oasis:names:tc:ebxml-regrep:xsd:rs:4.0"
-              xmlns:rim="urn:oasis:names:tc:ebxml-regrep:xsd:rim:4.0"
-              xmlns:sdg="http://data.europa.eu/p4s"
-              xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-              id="urn:uuid:test-request-001">
-    <Query queryDefinition="urn:oasis:names:tc:ebxml-regrep:query:GetObjectById">
-        <rim:Slot name="id">
-            <rim:SlotValue xsi:type="rim:StringValueType">
-                <rim:Value>test-evidence-id</rim:Value>
-            </rim:SlotValue>
-        </rim:Slot>
-    </Query>
-</QueryRequest>
-PAYLOADEOF
-)
+# Read the sample QueryRequest template and replace placeholders
+QUERY_REQUEST_TEMPLATE="$PROJECT_DIR/testdata/sample-query-request.xml"
+
+if [ ! -f "$QUERY_REQUEST_TEMPLATE" ]; then
+    echo "ERROR: Sample QueryRequest not found: $QUERY_REQUEST_TEMPLATE"
+    echo ""
+    echo "The sample-query-request.xml file contains a valid OOTS QueryRequest that"
+    echo "passes both XSD and Schematron validation."
+    exit 1
+fi
+
+# Create the payload by replacing placeholders
+PAYLOAD_CONTENT=$(cat "$QUERY_REQUEST_TEMPLATE" \
+    | sed "s/QUERY_ID_PLACEHOLDER/urn:uuid:$QUERY_UUID/" \
+    | sed "s/TIMESTAMP_PLACEHOLDER/$TIMESTAMP/")
 
 # Base64 encode the payload
 PAYLOAD_BASE64=$(echo -n "$PAYLOAD_CONTENT" | base64 -w 0)
@@ -91,65 +95,68 @@ SOAPEOF
 )
 
 echo "=========================================="
-echo "OOTS E2E Request Trigger"
+echo "OOTS Full Chain Request"
 echo "=========================================="
 echo ""
-echo "Red Gateway (Requester): $RED_GATEWAY_URL"
-echo "Blue Gateway (Provider): $BLUE_GATEWAY_URL"
+echo "Request Details:"
+echo "  Query ID: urn:uuid:$QUERY_UUID"
+echo "  Message ID: $MSG_UUID@domibus.eu"
+echo "  Conversation ID: $CONV_UUID"
+echo "  Evidence Provider: EMREX - DUO NL (00000001800866472000)"
+echo "  Subject: Jonas Smith, DOB 1999-03-01"
 echo ""
 
-# Check if Red Gateway is ready
-echo "Checking Red Gateway health..."
+# Check gateways
+echo "Checking gateways..."
 if ! curl -sf "$RED_GATEWAY_URL/domibus" > /dev/null 2>&1; then
-    echo "ERROR: Red Gateway is not accessible at $RED_GATEWAY_URL"
+    echo "ERROR: Red Gateway not accessible at $RED_GATEWAY_URL"
     echo "Make sure the E2E stack is running: task e2e:start"
     exit 1
 fi
-echo "✓ Red Gateway is ready"
+echo "  Red Gateway: OK"
 
-# Check if Blue Gateway is ready
-echo "Checking Blue Gateway health..."
-if ! curl -sf "$BLUE_GATEWAY_URL/domibus" > /dev/null 2>&1; then
-    echo "ERROR: Blue Gateway is not accessible at $BLUE_GATEWAY_URL"
-    echo "Make sure the E2E stack is running: task e2e:start"
-    exit 1
-fi
-echo "✓ Blue Gateway is ready"
-
+# Send the message
 echo ""
-echo "Sending test OOTS request from Red → Blue..."
+echo "Sending OOTS QueryRequest: Red Gateway -> Blue Gateway -> Bridge"
 echo ""
 
-# Send the message through Red Gateway's WS Plugin
-# Note: Using SOAP 1.2 content type (application/soap+xml)
 RESPONSE=$(curl -s -X POST \
     "$RED_GATEWAY_URL/domibus/services/wsplugin" \
     -H "Content-Type: application/soap+xml; charset=utf-8" \
     -u "$DOMIBUS_USER:$DOMIBUS_PASS" \
     -d "$SOAP_MESSAGE" 2>&1)
 
-# Check for SOAP fault in response
+# Check response
 if echo "$RESPONSE" | grep -q "soap:Fault"; then
     echo "ERROR: SOAP Fault received"
     echo "$RESPONSE" | xmllint --format - 2>/dev/null || echo "$RESPONSE"
     exit 1
 fi
 
-# Check for empty response
 if [ -z "$RESPONSE" ]; then
-    echo "ERROR: Empty response from server"
+    echo "ERROR: Empty response"
     exit 1
 fi
 
-echo "Response from Red Gateway:"
-echo "$RESPONSE" | head -20
+# Extract message ID from response
+RESP_MSG_ID=$(echo "$RESPONSE" | grep -oP '<messageID>[^<]+</messageID>' | sed 's/<[^>]*>//g')
+
+echo "Message accepted by Red Gateway!"
+echo "  Response Message ID: $RESP_MSG_ID"
 echo ""
 echo "=========================================="
-echo "Request sent successfully!"
-echo "=========================================="
 echo ""
-echo "Next steps:"
-echo "1. Check Red Gateway messages: $RED_GATEWAY_URL/domibus (admin/123456)"
-echo "2. Check Blue Gateway messages: $BLUE_GATEWAY_URL/domibus (admin/123456)"
-echo "3. Check Bridge logs: docker logs oots-bridge"
-echo "4. Check Kibana: http://localhost:5601"
+echo "The message will now flow:"
+echo "  1. Red Gateway sends to Blue Gateway (AS4)"
+echo "  2. Blue Gateway receives and stores message"
+echo "  3. Bridge polls Blue Gateway for pending messages"
+echo "  4. Bridge processes QueryRequest"
+echo "  5. Bridge sends response (PREVIEW_REQUIRED or evidence)"
+echo ""
+echo "Watch the logs:"
+echo "  docker logs -f oots-bridge"
+echo ""
+echo "Check message status:"
+echo "  Red Gateway:  http://localhost:8280/domibus"
+echo "  Blue Gateway: http://localhost:8180/domibus"
+echo ""

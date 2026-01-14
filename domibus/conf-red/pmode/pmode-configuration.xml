@@ -109,6 +109,18 @@
                               payloadProfile="ootsProfile"
                               errorHandling="ootsErrorHandling"
                               compressPayloads="true"/>
+
+            <legConfiguration name="exceptionResponseLeg"
+                              service="ootsService"
+                              action="exceptionResponse"
+                              defaultMpc="defaultMpc"
+                              reliability="ootsReliability"
+                              security="eDeliveryAS4Policy"
+                              receptionAwareness="receptionAwareness"
+                              propertySet="ootsPropertySet"
+                              payloadProfile="ootsProfile"
+                              errorHandling="ootsErrorHandling"
+                              compressPayloads="true"/>
         </legConfigurations>
 
         <process name="ootsQueryProcess"
@@ -129,11 +141,10 @@
         </process>
 
         <process name="ootsResponseProcess"
-                 agreement="ootsAgreement"
                  mep="oneway"
                  binding="push"
-                 initiatorRole="defaultInitiatorRole"
-                 responderRole="defaultResponderRole">
+                 initiatorRole="defaultResponderRole"
+                 responderRole="defaultInitiatorRole">
             <initiatorParties>
                 <initiatorParty name="blue_gw"/>
             </initiatorParties>
@@ -142,6 +153,7 @@
             </responderParties>
             <legs>
                 <leg name="queryResponseLeg"/>
+                <leg name="exceptionResponseLeg"/>
             </legs>
         </process>
     </businessProcesses>

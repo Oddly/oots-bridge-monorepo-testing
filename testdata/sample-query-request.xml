@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<query:QueryRequest xmlns:query="urn:oasis:names:tc:ebxml-regrep:xsd:query:4.0"
+                    xmlns:rim="urn:oasis:names:tc:ebxml-regrep:xsd:rim:4.0"
+                    xmlns:rs="urn:oasis:names:tc:ebxml-regrep:xsd:rs:4.0"
+                    xmlns:sdg="http://data.europa.eu/p4s"
+                    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                    xmlns:xlink="http://www.w3.org/1999/xlink"
+                    id="QUERY_ID_PLACEHOLDER">
+
+    <rim:Slot name="SpecificationIdentifier">
+        <rim:SlotValue xsi:type="rim:StringValueType">
+            <rim:Value>oots-edm:v1.0</rim:Value>
+        </rim:SlotValue>
+    </rim:Slot>
+
+    <rim:Slot name="IssueDateTime">
+        <rim:SlotValue xsi:type="rim:DateTimeValueType">
+            <rim:Value>TIMESTAMP_PLACEHOLDER</rim:Value>
+        </rim:SlotValue>
+    </rim:Slot>
+
+    <rim:Slot name="Procedure">
+        <rim:SlotValue xsi:type="rim:InternationalStringValueType">
+            <rim:Value>
+                <rim:LocalizedString value="T3"/>
+            </rim:Value>
+        </rim:SlotValue>
+    </rim:Slot>
+
+    <rim:Slot name="PossibilityForPreview">
+        <rim:SlotValue xsi:type="rim:BooleanValueType">
+            <rim:Value>true</rim:Value>
+        </rim:SlotValue>
+    </rim:Slot>
+
+    <rim:Slot name="ExplicitRequestGiven">
+        <rim:SlotValue xsi:type="rim:BooleanValueType">
+            <rim:Value>true</rim:Value>
+        </rim:SlotValue>
+    </rim:Slot>
+
+    <rim:Slot name="Requirements">
+        <rim:SlotValue xsi:type="rim:CollectionValueType" collectionType="urn:oasis:names:tc:ebxml-regrep:CollectionType:Set">
+            <rim:Element xsi:type="rim:AnyValueType">
+                <sdg:Requirement>
+                    <sdg:Identifier>https://sr.oots.tech.ec.europa.eu/requirements/dbe25e4e-fc46-3abd-823c-1bcfd54cb78d</sdg:Identifier>
+                    <sdg:Name lang="EN">Proof of qualification level of tertiary education diploma/certificate/degree and its courses</sdg:Name>
+                </sdg:Requirement>
+            </rim:Element>
+        </rim:SlotValue>
+    </rim:Slot>
+
+    <rim:Slot name="EvidenceRequester">
+        <rim:SlotValue xsi:type="rim:CollectionValueType" collectionType="urn:oasis:names:tc:ebxml-regrep:CollectionType:Set">
+            <rim:Element xsi:type="rim:AnyValueType">
+                <sdg:Agent>
+                    <sdg:Identifier schemeID="urn:cef.eu:names:identifier:EAS:0106">50973029</sdg:Identifier>
+                    <sdg:Name lang="EN">Dienst Uitvoering Onderwijs</sdg:Name>
+                    <sdg:Address>
+                        <sdg:AdminUnitLevel1>NL</sdg:AdminUnitLevel1>
+                    </sdg:Address>
+                    <sdg:Classification>ER</sdg:Classification>
+                </sdg:Agent>
+            </rim:Element>
+        </rim:SlotValue>
+    </rim:Slot>
+
+    <rim:Slot name="EvidenceProvider">
+        <rim:SlotValue xsi:type="rim:AnyValueType">
+            <sdg:Agent>
+                <sdg:Identifier schemeID="urn:oasis:names:tc:ebcore:partyid-type:unregistered:NL">00000001800866472000</sdg:Identifier>
+                <sdg:Name lang="EN">EMREX - DUO NL</sdg:Name>
+            </sdg:Agent>
+        </rim:SlotValue>
+    </rim:Slot>
+
+    <query:ResponseOption returnType="LeafClassWithRepositoryItem"/>
+
+    <query:Query queryDefinition="DocumentQuery">
+        <rim:Slot name="NaturalPerson">
+            <rim:SlotValue xsi:type="rim:AnyValueType">
+                <sdg:Person>
+                    <sdg:LevelOfAssurance>High</sdg:LevelOfAssurance>
+                    <sdg:FamilyName>Smith</sdg:FamilyName>
+                    <sdg:GivenName>Jonas</sdg:GivenName>
+                    <sdg:DateOfBirth>1999-03-01</sdg:DateOfBirth>
+                </sdg:Person>
+            </rim:SlotValue>
+        </rim:Slot>
+
+        <rim:Slot name="EvidenceRequest">
+            <rim:SlotValue xsi:type="rim:AnyValueType">
+                <sdg:DataServiceEvidenceType>
+                    <sdg:Identifier>8387ddbc-3618-4584-9ebd-3060d56edb6a</sdg:Identifier>
+                    <sdg:EvidenceTypeClassification>https://sr.oots.tech.ec.europa.eu/evidencetypeclassifications/NL/fba698b1-4939-47a6-8445-4f6b8b94b60a</sdg:EvidenceTypeClassification>
+                    <sdg:Title lang="EN">Elmo (1.5)</sdg:Title>
+                    <sdg:DistributedAs>
+                        <sdg:Format>application/pdf</sdg:Format>
+                    </sdg:DistributedAs>
+                </sdg:DataServiceEvidenceType>
+            </rim:SlotValue>
+        </rim:Slot>
+    </query:Query>
+
+</query:QueryRequest>
