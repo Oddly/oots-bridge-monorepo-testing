@@ -19,6 +19,7 @@
         "event.created": { "type": "date" },
         "event.category": { "type": "keyword" },
         "event.type": { "type": "keyword" },
+        "test.path": { "type": "integer" },
         "messaging.system": { "type": "keyword" },
         "messaging.operation": { "type": "keyword" },
         "messaging.message.body.size": { "type": "integer" },

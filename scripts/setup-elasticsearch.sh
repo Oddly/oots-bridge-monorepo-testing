@@ -11,6 +11,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$SCRIPT_DIR/.."
 
 ES_URL="${ES_URL:-http://localhost:9200}"
+KIBANA_URL="${KIBANA_URL:-http://localhost:5601}"
 TEMPLATE_FILE="$PROJECT_DIR/elasticsearch/oots-logs-template.json"
 
 echo "=========================================="
@@ -128,12 +129,145 @@ fi
 
 echo "✓ Index template 'oots-logs' created"
 echo ""
+
+# Create ingest pipeline to extract test.path from conversation ID
+# Conversation IDs from tests are formatted as: path-N-uuid
+echo "Creating ingest pipeline for test path extraction..."
+curl -sf -X PUT "$ES_URL/_ingest/pipeline/oots-test-path" \
+    -H "Content-Type: application/json" \
+    -d '{
+    "description": "Extract test path number from conversation ID (path-N-uuid format)",
+    "processors": [
+        {
+            "grok": {
+                "field": "oots.conversation.id",
+                "patterns": ["path-(?<test_path_str>\\d+)-.*"],
+                "ignore_missing": true,
+                "ignore_failure": true
+            }
+        },
+        {
+            "convert": {
+                "field": "test_path_str",
+                "target_field": "test.path",
+                "type": "integer",
+                "ignore_missing": true,
+                "ignore_failure": true
+            }
+        },
+        {
+            "remove": {
+                "field": "test_path_str",
+                "ignore_missing": true
+            }
+        }
+    ]
+}' && echo "✓ Ingest pipeline 'oots-test-path' created" || echo "⚠ Failed to create ingest pipeline (non-fatal)"
+
+echo ""
+
+# Create Kibana data view for oots-logs-*
+echo "Creating Kibana data view..."
+
+# Wait for Kibana to be ready
+echo "Waiting for Kibana..."
+for i in {1..30}; do
+    if curl -sf "$KIBANA_URL/api/status" > /dev/null 2>&1; then
+        echo "✓ Kibana is ready"
+        break
+    fi
+    if [ $i -eq 30 ]; then
+        echo "⚠ Kibana not ready after 30 attempts, skipping data view creation"
+        SKIP_KIBANA=true
+        break
+    fi
+    echo "  Waiting... ($i/30)"
+    sleep 2
+done
+
+if [ "$SKIP_KIBANA" != "true" ]; then
+    # Check if data view already exists
+    EXISTING=$(curl -sf "$KIBANA_URL/api/data_views/data_view/oots-logs" \
+        -H "kbn-xsrf: true" 2>/dev/null || echo "")
+
+    if [ -n "$EXISTING" ] && echo "$EXISTING" | grep -q '"id":"oots-logs"'; then
+        echo "✓ Data view 'oots-logs' already exists"
+    else
+        # Create the data view
+        curl -sf -X POST "$KIBANA_URL/api/data_views/data_view" \
+            -H "kbn-xsrf: true" \
+            -H "Content-Type: application/json" \
+            -d '{
+            "data_view": {
+                "id": "oots-logs",
+                "title": "oots-logs-*",
+                "name": "OOTS Logs",
+                "timeFieldName": "@timestamp"
+            }
+        }' > /dev/null && echo "✓ Data view 'oots-logs' created" || echo "⚠ Failed to create data view (non-fatal)"
+    fi
+
+    # Import E2E test dashboard
+    DASHBOARD_FILE="$PROJECT_DIR/kibana/oots-dashboard.ndjson"
+    if [ -f "$DASHBOARD_FILE" ]; then
+        echo "Importing E2E test dashboard..."
+        IMPORT_RESULT=$(curl -sf -X POST "$KIBANA_URL/api/saved_objects/_import?overwrite=true" \
+            -H "kbn-xsrf: true" \
+            --form file=@"$DASHBOARD_FILE" 2>&1)
+
+        if echo "$IMPORT_RESULT" | grep -q '"success":true'; then
+            echo "✓ Dashboard 'OOTS E2E Test Dashboard' imported"
+        else
+            echo "⚠ E2E dashboard import had issues (non-fatal)"
+        fi
+    fi
+
+    # Import production-style dashboards (Main, Trace Details, Error Details)
+    PROD_DASHBOARD_FILE="$PROJECT_DIR/kibana/oots-production-dashboards.ndjson"
+    if [ -f "$PROD_DASHBOARD_FILE" ]; then
+        echo "Importing production dashboards..."
+        IMPORT_RESULT=$(curl -sf -X POST "$KIBANA_URL/api/saved_objects/_import?overwrite=true" \
+            -H "kbn-xsrf: true" \
+            --form file=@"$PROD_DASHBOARD_FILE" 2>&1)
+
+        SUCCESS_COUNT=$(echo "$IMPORT_RESULT" | grep -o '"successCount":[0-9]*' | grep -o '[0-9]*')
+        if [ -n "$SUCCESS_COUNT" ] && [ "$SUCCESS_COUNT" -gt 0 ]; then
+            echo "✓ Production dashboards imported ($SUCCESS_COUNT objects)"
+        else
+            echo "⚠ Production dashboard import had issues (non-fatal)"
+        fi
+    fi
+
+    # Import sequence timeline dashboard (Vega visualization)
+    SEQUENCE_DASHBOARD_FILE="$PROJECT_DIR/kibana/oots-sequence-dashboard.ndjson"
+    if [ -f "$SEQUENCE_DASHBOARD_FILE" ]; then
+        echo "Importing sequence timeline dashboard..."
+        IMPORT_RESULT=$(curl -sf -X POST "$KIBANA_URL/api/saved_objects/_import?overwrite=true" \
+            -H "kbn-xsrf: true" \
+            --form file=@"$SEQUENCE_DASHBOARD_FILE" 2>&1)
+
+        if echo "$IMPORT_RESULT" | grep -q '"success":true'; then
+            echo "✓ Sequence timeline dashboard imported"
+        else
+            echo "⚠ Sequence dashboard import had issues (non-fatal)"
+        fi
+    fi
+fi
+
+echo ""
 echo "=========================================="
-echo "Elasticsearch setup complete"
+echo "Setup complete"
 echo "=========================================="
 echo ""
 echo "Kibana: http://localhost:5601"
-echo "Index pattern: oots-logs-*"
+echo "Data view: oots-logs-*"
+echo ""
+echo "Dashboards:"
+echo "  - E2E Test:      http://localhost:5601/app/dashboards#/view/oots-e2e-dashboard"
+echo "  - Sequence:      http://localhost:5601/app/dashboards#/view/oots-sequence-dashboard"
+echo "  - Main:          http://localhost:5601/app/dashboards#/view/60d6d64a-f484-42e6-a9f6-c24862a672a8"
+echo "  - Trace Details: http://localhost:5601/app/dashboards#/view/9f41ed5c-7f08-481b-b56e-fff441ea72ad"
+echo "  - Error Details: http://localhost:5601/app/dashboards#/view/a473fc17-090e-44b2-9bff-134e13eb64f0"
 echo ""
 echo "Available OOTS fields:"
 echo "  - oots.message.type (QueryRequest/QueryResponse)"

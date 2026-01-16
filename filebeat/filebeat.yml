@@ -62,15 +62,10 @@ processors:
 output.elasticsearch:
   hosts: ["elasticsearch:9200"]
   index: "oots-logs-%{+yyyy.MM.dd}"
+  pipeline: "oots-test-path"
 
 setup.template:
-  name: "oots-logs"
-  pattern: "oots-logs-*"
-  enabled: true
-  settings:
-    index:
-      number_of_shards: 1
-      number_of_replicas: 0
+  enabled: false
 
 setup.ilm:
   enabled: false
