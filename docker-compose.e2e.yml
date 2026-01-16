@@ -89,15 +89,17 @@ services:
     networks:
       - oots-e2e-network
     healthcheck:
-      test: ["CMD-SHELL", "mysql -u root -proot -e 'SELECT 1 FROM domibus.TB_USER LIMIT 1' 2>/dev/null || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 30
+      # Check schema exists AND server is stable (3 checks with delays to survive temp server restart)
+      test: ["CMD-SHELL", "for i in 1 2 3; do mysql -u edelivery -pedelivery domibus -e 'SELECT 1 FROM TB_DDC_LOOKUP LIMIT 1' || exit 1; sleep 3; done"]
+      interval: 15s
+      timeout: 20s
+      retries: 20
       start_period: 60s
 
   domibus-blue:
     image: tanzari/domibus:latest
     container_name: domibus-blue
+    restart: on-failure:3
     environment:
       DOMIBUS_DB_SERVERNAME: mysql-blue
       domibus.database.serverName: mysql-blue
@@ -124,7 +126,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 10
-      start_period: 180s
+      start_period: 60s
 
   # ===========================================================================
   # Red Domibus Gateway (Evidence Requester side)
@@ -148,15 +150,17 @@ services:
     networks:
       - oots-e2e-network
     healthcheck:
-      test: ["CMD-SHELL", "mysql -u root -proot -e 'SELECT 1 FROM domibus.TB_USER LIMIT 1' 2>/dev/null || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 30
+      # Check schema exists AND server is stable (3 checks with delays to survive temp server restart)
+      test: ["CMD-SHELL", "for i in 1 2 3; do mysql -u edelivery -pedelivery domibus -e 'SELECT 1 FROM TB_DDC_LOOKUP LIMIT 1' || exit 1; sleep 3; done"]
+      interval: 15s
+      timeout: 20s
+      retries: 20
       start_period: 60s
 
   domibus-red:
     image: tanzari/domibus:latest
     container_name: domibus-red
+    restart: on-failure:3
     environment:
       DOMIBUS_DB_SERVERNAME: mysql-red
       domibus.database.serverName: mysql-red
@@ -183,7 +187,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 10
-      start_period: 180s
+      start_period: 60s
 
   # ===========================================================================
   # Mock EMREX Provider
@@ -197,7 +201,8 @@ services:
     command: ["npx", "tsx", "mocks/mock-emrex-provider.ts"]
     environment:
       - MOCK_EMREX_PORT=9081
-      - BRIDGE_STORE_URL=http://oots-bridge:3003/store
+      - BRIDGE_STORE_URL=https://bridge-proxy:443/store
+      - NODE_TLS_REJECT_UNAUTHORIZED=0
     ports:
       - "9081:9081"
     networks:
@@ -222,8 +227,8 @@ services:
       - DOMIBUS_PASSWORD=123456
       # Bridge identity
       - PARTY_ID=blue_gw
-      # Frontend URL
-      - BRIDGE_FRONTEND_URL=http://localhost:3003
+      # Frontend URL (HTTPS via nginx proxy for schematron compliance)
+      - BRIDGE_FRONTEND_URL=https://localhost:3443
       # EMREX providers - point to mock
       - EMREX_DATA_PROVIDERS={"00000001800866472000":"http://mock-emrex:9081/emrex"}
       # Certificate endpoint
@@ -238,6 +243,10 @@ services:
       - REDIRECT_TIMEOUT_IN_MINUTES=16
       - PREVIEW_SPACE_TIMEOUT_IN_MINUTES=40
       - CERTIFICATE_REFRESH_INTERVAL=3600
+      # Skip signature validation for mock EMREX (mock doesn't sign data)
+      - SKIP_EMREX_SIGNATURE_VALIDATION=true
+      # Use fixed CID to match test PMode (production uses random UUID per OOTS spec)
+      - PAYLOAD_CID=message
     ports:
       - "3003:3003"
     depends_on:
@@ -251,6 +260,29 @@ services:
       - bridge-logs:/app/logs
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3003/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ===========================================================================
+  # Bridge TLS Proxy (nginx for HTTPS termination)
+  # ===========================================================================
+
+  bridge-proxy:
+    image: nginx:alpine
+    container_name: bridge-proxy
+    ports:
+      - "3443:443"
+    volumes:
+      - ./nginx/conf/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
+    depends_on:
+      bridge:
+        condition: service_healthy
+    networks:
+      - oots-e2e-network
+    healthcheck:
+      test: ["CMD", "curl", "-kf", "https://localhost:443/health"]
       interval: 5s
       timeout: 3s
       retries: 10

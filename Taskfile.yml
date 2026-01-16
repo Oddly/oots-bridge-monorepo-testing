@@ -113,7 +113,7 @@ tasks:
         echo ""
         echo "Monitoring:"
         echo "  Kibana:       http://localhost:5601"
-        echo "  Bridge:       http://localhost:3003"
+        echo "  Bridge:       https://localhost:3443"
         echo ""
         echo "Send test request:"
         echo "  task e2e:trigger"
@@ -124,10 +124,67 @@ tasks:
       - docker compose -f docker-compose.e2e.yml down
 
   e2e:clean:
-    desc: "Remove all E2E volumes (fresh start)"
+    desc: "Stop containers and remove volumes (fresh start)"
     cmds:
-      - docker compose -f docker-compose.e2e.yml down -v
+      - docker compose -f docker-compose.e2e.yml down -v --remove-orphans
+
+  e2e:nuke:
+    desc: "Complete cleanup - remove containers, volumes, images, and keystores"
+    cmds:
+      - docker compose -f docker-compose.e2e.yml down -v --remove-orphans
+      - docker rmi oots-bridge:latest oots-emrex/monorepo:latest oots-bridge-monorepo-testing-mock-emrex:latest 2>/dev/null || true
       - rm -rf domibus/conf/keystores/* domibus/conf-red/keystores/*
+      - echo "All E2E resources removed. Run 'task setup && task e2e:start' to rebuild."
+
+  e2e:rebuild:
+    desc: "Rebuild all images (bridge + mock-emrex) without restarting stack"
+    cmds:
+      - task: setup:bridge-image
+      - task: e2e:rebuild:mock-emrex
+
+  e2e:rebuild:bridge:
+    desc: "Rebuild and restart only the Bridge container"
+    cmds:
+      - task: setup:bridge-image
+      - docker compose -f docker-compose.e2e.yml up -d bridge
+      - echo "Waiting for Bridge to be healthy..."
+      - |
+        for i in $(seq 1 30); do
+          STATUS=$(docker inspect --format='{{.State.Health.Status}}' oots-bridge 2>/dev/null || echo "missing")
+          echo "[$i/30] Bridge: $STATUS"
+          if [ "$STATUS" = "healthy" ]; then
+            echo "Bridge is ready!"
+            break
+          fi
+          sleep 2
+        done
+      - docker compose -f docker-compose.e2e.yml up -d bridge-proxy filebeat
+
+  e2e:rebuild:mock-emrex:
+    desc: "Rebuild and restart only the mock-emrex container"
+    cmds:
+      - docker compose -f docker-compose.e2e.yml build --no-cache mock-emrex
+      - docker compose -f docker-compose.e2e.yml up -d mock-emrex
+      - echo "Mock EMREX restarted"
+
+  e2e:rebuild:all:
+    desc: "Rebuild all images and restart the entire stack"
+    cmds:
+      - task: e2e:rebuild
+      - task: e2e:restart
+
+  e2e:fresh:
+    desc: "Full reset: nuke everything, rebuild images, start fresh stack"
+    cmds:
+      - task: e2e:nuke
+      - task: setup
+      - task: e2e:start
+
+  e2e:restart:
+    desc: "Clean restart - remove volumes and start fresh"
+    cmds:
+      - task: e2e:clean
+      - task: e2e:start
 
   e2e:status:
     desc: "Show E2E stack status"
@@ -154,6 +211,26 @@ tasks:
     cmds:
       - docker compose -f docker-compose.e2e.yml logs -f bridge
 
+  e2e:logs:bridge:app:
+    desc: "View Bridge APP logs (structured JSON)"
+    cmds:
+      - 'docker exec oots-bridge cat /app/logs/app-logs.log 2>/dev/null | tail -20 | jq -c ''{action: .["event.action"], outcome: .["event.outcome"], error: .["error.message"]}'''
+
+  e2e:logs:bridge:ext:
+    desc: "View Bridge EXT logs (external system interactions)"
+    cmds:
+      - 'docker exec oots-bridge cat /app/logs/ext-logs.log 2>/dev/null | tail -20 | jq -c ''{action: .["event.action"], outcome: .["event.outcome"], sessionId: .["app.sessionId"]}'''
+
+  e2e:logs:bridge:oots:
+    desc: "View Bridge OOTS logs (evidence request/response)"
+    cmds:
+      - 'docker exec oots-bridge cat /app/logs/oots-logs.log 2>/dev/null | tail -20 | jq -c ''{action: .["event.action"], outcome: .["event.outcome"], convId: .["oots.conversation.id"]}'''
+
+  e2e:logs:mock-emrex:
+    desc: "View Mock EMREX logs"
+    cmds:
+      - 'docker logs mock-emrex --tail 20 2>&1 | grep -v "Warning:" | jq -c ''{action: .["event.action"], outcome: .["event.outcome"], sessionId: .["app.sessionId"]}'' 2>/dev/null || docker logs mock-emrex --tail 20'
+
   e2e:setup-elasticsearch:
     desc: "Setup Elasticsearch with OOTS index template"
     cmds:
@@ -170,9 +247,9 @@ tasks:
       - ./scripts/configure-domibus.sh
 
   e2e:upload-pmodes:
-    desc: "Upload PModes to both gateways via Playwright automation"
+    desc: "Upload PModes to both gateways via REST API"
     cmds:
-      - node scripts/upload-pmode-playwright.js
+      - ./scripts/upload-pmode.sh
 
   e2e:trigger:
     desc: "Send a test OOTS request through the system"
@@ -184,15 +261,118 @@ tasks:
     cmds:
       - npx tsx scripts/validate.ts
 
-  e2e:path-tests:
-    desc: "Run comprehensive path coverage tests"
+  e2e:test:
+    desc: "Run all path coverage tests"
     cmds:
-      - npx tsx scripts/path-coverage-tests.ts {{.CLI_ARGS}}
+      - npx tsx scripts/path-coverage-tests.ts
 
-  e2e:path-tests:single:
-    desc: "Run a single path test (e.g., task e2e:path-tests:single -- --path=2)"
+  e2e:test:path:
+    desc: "Run a specific path test (usage: task e2e:test:path -- 2)"
     cmds:
-      - npx tsx scripts/path-coverage-tests.ts {{.CLI_ARGS}}
+      - npx tsx scripts/path-coverage-tests.ts --path={{.CLI_ARGS}} --skip-prereqs
+
+  e2e:test:1:
+    desc: "Path 1: Happy Path (Preview Required)"
+    cmds:
+      - npx tsx scripts/path-coverage-tests.ts --path=1 --skip-prereqs
+
+  e2e:test:2:
+    desc: "Path 2: Happy Path (Evidence Delivered)"
+    cmds:
+      - npx tsx scripts/path-coverage-tests.ts --path=2 --skip-prereqs
+
+  e2e:test:3:
+    desc: "Path 3: No Preview Support"
+    cmds:
+      - npx tsx scripts/path-coverage-tests.ts --path=3 --skip-prereqs
+
+  e2e:test:4:
+    desc: "Path 4: Request XML Validation Error"
+    cmds:
+      - npx tsx scripts/path-coverage-tests.ts --path=4 --skip-prereqs
+
+  e2e:test:5:
+    desc: "Path 5: Request Schematron Error"
+    cmds:
+      - npx tsx scripts/path-coverage-tests.ts --path=5 --skip-prereqs
+
+  e2e:test:6:
+    desc: "Path 6: EMREX User Cancellation"
+    cmds:
+      - npx tsx scripts/path-coverage-tests.ts --path=6 --skip-prereqs
+
+  e2e:test:7:
+    desc: "Path 7: EMREX Provider Error"
+    cmds:
+      - npx tsx scripts/path-coverage-tests.ts --path=7 --skip-prereqs
+
+  e2e:test:8:
+    desc: "Path 8: EMREX No Results"
+    cmds:
+      - npx tsx scripts/path-coverage-tests.ts --path=8 --skip-prereqs
+
+  e2e:test:9:
+    desc: "Path 9: EMREX Invalid GZIP"
+    cmds:
+      - npx tsx scripts/path-coverage-tests.ts --path=9 --skip-prereqs
+
+  e2e:test:10:
+    desc: "Path 10: EMREX Invalid XML"
+    cmds:
+      - npx tsx scripts/path-coverage-tests.ts --path=10 --skip-prereqs
+
+  e2e:test:11:
+    desc: "Path 11: EMREX Identity Mismatch"
+    cmds:
+      - npx tsx scripts/path-coverage-tests.ts --path=11 --skip-prereqs
+
+  e2e:test:12:
+    desc: "Path 12: Session Timeout"
+    cmds:
+      - npx tsx scripts/path-coverage-tests.ts --path=12 --skip-prereqs
+
+  e2e:clear-logs:
+    desc: "Clear all logs from Elasticsearch (fresh test run)"
+    cmds:
+      - |
+        INDEX=$(curl -s "http://localhost:9200/_cat/indices/oots*?h=index" | head -1)
+        if [ -n "$INDEX" ]; then
+          curl -s -X DELETE "http://localhost:9200/$INDEX" | jq .
+          echo "Cleared index: $INDEX"
+        else
+          echo "No oots-logs index found"
+        fi
+
+  e2e:test:fresh:
+    desc: "Clear logs and run all path tests (clean test run)"
+    cmds:
+      - task: e2e:clear-logs
+      - sleep 2
+      - task: e2e:test
+
+  e2e:test:verify:
+    desc: "Rebuild bridge, clear logs, run all tests (full verification cycle)"
+    cmds:
+      - task: e2e:rebuild:bridge
+      - task: e2e:clear-logs
+      - sleep 2
+      - task: e2e:test
+
+  e2e:health:
+    desc: "Quick health check of all services"
+    cmds:
+      - |
+        echo "Service Health Status:"
+        echo "======================"
+        for svc in domibus-blue domibus-red oots-bridge mock-emrex es-e2e; do
+          STATUS=$(docker inspect --format='{{`{{.State.Health.Status}}`}}' $svc 2>/dev/null || echo "not running")
+          printf "  %-15s %s\n" "$svc:" "$STATUS"
+        done
+        echo ""
+        echo "Quick connectivity test:"
+        curl -sf http://localhost:3003/health > /dev/null && echo "  Bridge:     OK" || echo "  Bridge:     FAIL"
+        curl -sf http://localhost:9081/health > /dev/null && echo "  Mock EMREX: OK" || echo "  Mock EMREX: FAIL"
+        curl -sf http://localhost:9200/_cluster/health > /dev/null && echo "  ES:         OK" || echo "  ES:         FAIL"
 
   # ==========================================================================
   # Legacy Single Domibus Stack (for backward compatibility)
