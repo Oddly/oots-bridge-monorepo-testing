@@ -14,22 +14,123 @@
 
 import Fastify from 'fastify';
 import * as zlib from 'zlib';
+import * as https from 'https';
+import * as http from 'http';
+import { URL } from 'url';
 
 const PORT = process.env.MOCK_EMREX_PORT || 9081;
+
+// ============================================================================
+// ECS-Compliant Structured Logging (matching OOTS Bridge format)
+// ============================================================================
+
+type LogLevel = 'debug' | 'info' | 'warn' | 'error';
+type EventOutcome = 'success' | 'failure' | 'unknown';
+
+interface LogFields {
+  'event.action': string;
+  'event.outcome'?: EventOutcome;
+  'event.category'?: string[];
+  'event.type'?: string[];
+  'app.sessionId'?: string;
+  'app.returnUrl'?: string;
+  'app.returnCode'?: string;
+  'app.behavior'?: string;
+  'app.responseDelay'?: number;
+  'app.bridgeResponseStatus'?: number;
+  'app.targetUrl'?: string;
+  'error.message'?: string;
+  [key: string]: unknown;
+}
+
+function structuredLog(level: LogLevel, fields: LogFields): void {
+  const severityMap: Record<LogLevel, { number: number; text: string }> = {
+    debug: { number: 7, text: 'DEBUG' },
+    info: { number: 13, text: 'INFO' },
+    warn: { number: 17, text: 'WARN' },
+    error: { number: 21, text: 'ERROR' },
+  };
+
+  const timestamp = new Date().toISOString();
+  const logEntry = {
+    'log.level': level,
+    'severity.number': severityMap[level].number,
+    'severity.text': severityMap[level].text,
+    '@timestamp': timestamp,
+    'log.logger': 'MOCK_EMREX',
+    'event.created': timestamp,
+    ...fields,
+  };
+
+  // Output as single-line JSON for Filebeat/Elasticsearch ingestion
+  console.log(JSON.stringify(logEntry));
+}
+
+const logger = {
+  debug: (fields: LogFields) => structuredLog('debug', fields),
+  info: (fields: LogFields) => structuredLog('info', fields),
+  warn: (fields: LogFields) => structuredLog('warn', fields),
+  error: (fields: LogFields) => structuredLog('error', fields),
+};
+
+// Helper function to POST using Node's http/https modules (more reliable than native fetch in tsx)
+function httpPost(
+  targetUrl: string,
+  body: string
+): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const url = new URL(targetUrl);
+    const isHttps = url.protocol === 'https:';
+
+    const options: https.RequestOptions = {
+      hostname: url.hostname,
+      port: url.port || (isHttps ? 443 : 80),
+      path: url.pathname + url.search,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Content-Length': Buffer.byteLength(body),
+      },
+      // Skip TLS verification for self-signed certs in Docker
+      rejectUnauthorized: false,
+    };
+
+    const req = (isHttps ? https : http).request(options, (res) => {
+      let responseBody = '';
+      res.on('data', (chunk) => (responseBody += chunk));
+      res.on('end', () => {
+        resolve({ status: res.statusCode || 0, body: responseBody });
+      });
+    });
+
+    req.on('error', (err) => {
+      reject(err);
+    });
+
+    req.write(body);
+    req.end();
+  });
+}
 const BRIDGE_STORE_URL = process.env.BRIDGE_STORE_URL || 'http://localhost:3003/store';
 
 // Rewrite localhost URLs to Docker network URLs when running in container
 function rewriteUrlForDocker(url: string): string {
   // Check if we're in Docker (BRIDGE_STORE_URL will have container hostname)
+  if (BRIDGE_STORE_URL.includes('bridge-proxy')) {
+    // Rewrite to HTTPS via nginx proxy
+    return url
+      .replace('http://localhost:3003', 'https://bridge-proxy:443')
+      .replace('https://localhost:3443', 'https://bridge-proxy:443');
+  }
   if (BRIDGE_STORE_URL.includes('oots-bridge')) {
     return url.replace('localhost:3003', 'oots-bridge:3003');
   }
   return url;
 }
 
-const app = Fastify({ logger: true });
+const app = Fastify({ logger: false });
 
-// Sample ELMO data (simplified)
+// Sample ELMO data (schema-compliant)
 const sampleElmo = `<?xml version="1.0" encoding="UTF-8"?>
 <elmo xmlns="https://github.com/emrex-eu/elmo-schemas/tree/v1"
       xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
@@ -45,12 +146,12 @@ const sampleElmo = `<?xml version="1.0" encoding="UTF-8"?>
     <issuer>
       <identifier type="schac">urn:schac:personalUniqueCode:nl:local:universityX</identifier>
       <title xml:lang="en">University X</title>
-      <country>NL</country>
+      <url>https://universityx.nl</url>
     </issuer>
     <learningOpportunitySpecification>
       <identifier type="local">DEGREE-001</identifier>
       <title xml:lang="en">Bachelor of Science in Computer Science</title>
-      <type>Degree</type>
+      <type>Degree Programme</type>
       <iscedCode>0613</iscedCode>
       <specifies>
         <learningOpportunityInstance>
@@ -65,14 +166,11 @@ const sampleElmo = `<?xml version="1.0" encoding="UTF-8"?>
         </learningOpportunityInstance>
       </specifies>
     </learningOpportunitySpecification>
+    <issueDate>2021-06-30T00:00:00Z</issueDate>
   </report>
   <attachment>
     <type>Diploma</type>
-    <title xml:lang="en">Diploma Certificate</title>
-    <content>
-      <!-- Base64 encoded PDF would go here in real scenario -->
-      JVBERi0xLjQKJeLjz9MKMSAwIG9iago8PC9UeXBlL0NhdGFsb2cvUGFnZXMgMiAwIFI+PgplbmRvYmoKMiAwIG9iago8PC9UeXBlL1BhZ2VzL0tpZHNbMyAwIFJdL0NvdW50IDE+PgplbmRvYmoKMyAwIG9iago8PC9UeXBlL1BhZ2UvTWVkaWFCb3hbMCAwIDYxMiA3OTJdL1BhcmVudCAyIDAgUi9SZXNvdXJjZXM8PD4+Pj4KZW5kb2JqCnhyZWYKMCA0CjAwMDAwMDAwMDAgNjU1MzUgZiAKMDAwMDAwMDAxNSAwMDAwMCBuIAowMDAwMDAwMDY4IDAwMDAwIG4gCjAwMDAwMDAxMjUgMDAwMDAgbiAKdHJhaWxlcgo8PC9TaXplIDQvUm9vdCAxIDAgUj4+CnN0YXJ0eHJlZgoyMjMKJSVFT0Y=
-    </content>
+    <content>JVBERi0xLjQKJeLjz9MKMSAwIG9iago8PC9UeXBlL0NhdGFsb2cvUGFnZXMgMiAwIFI+PgplbmRvYmoKMiAwIG9iago8PC9UeXBlL1BhZ2VzL0tpZHNbMyAwIFJdL0NvdW50IDE+PgplbmRvYmoKMyAwIG9iago8PC9UeXBlL1BhZ2UvTWVkaWFCb3hbMCAwIDYxMiA3OTJdL1BhcmVudCAyIDAgUi9SZXNvdXJjZXM8PD4+Pj4KZW5kb2JqCnhyZWYKMCA0CjAwMDAwMDAwMDAgNjU1MzUgZiAKMDAwMDAwMDAxNSAwMDAwMCBuIAowMDAwMDAwMDY4IDAwMDAwIG4gCjAwMDAwMDAxMjUgMDAwMDAgbiAKdHJhaWxlcgo8PC9TaXplIDQvUm9vdCAxIDAgUj4+CnN0YXJ0eHJlZgoyMjMKJSVFT0Y=</content>
   </attachment>
 </elmo>`;
 
@@ -107,7 +205,7 @@ const invalidElmoXml = `<?xml version="1.0" encoding="UTF-8"?>
   </report>
 </elmo>`;
 
-// ELMO with mismatched identity (different name/DOB)
+// ELMO with mismatched identity (different name/DOB - schema-compliant)
 const mismatchedIdentityElmo = `<?xml version="1.0" encoding="UTF-8"?>
 <elmo xmlns="https://github.com/emrex-eu/elmo-schemas/tree/v1"
       xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
@@ -123,12 +221,12 @@ const mismatchedIdentityElmo = `<?xml version="1.0" encoding="UTF-8"?>
     <issuer>
       <identifier type="schac">urn:schac:personalUniqueCode:nl:local:universityX</identifier>
       <title xml:lang="en">University X</title>
-      <country>NL</country>
+      <url>https://universityx.nl</url>
     </issuer>
     <learningOpportunitySpecification>
       <identifier type="local">DEGREE-002</identifier>
       <title xml:lang="en">Bachelor of Arts</title>
-      <type>Degree</type>
+      <type>Degree Programme</type>
       <iscedCode>0613</iscedCode>
       <specifies>
         <learningOpportunityInstance>
@@ -142,6 +240,7 @@ const mismatchedIdentityElmo = `<?xml version="1.0" encoding="UTF-8"?>
         </learningOpportunityInstance>
       </specifies>
     </learningOpportunitySpecification>
+    <issueDate>2021-06-30T00:00:00Z</issueDate>
   </report>
 </elmo>`;
 
@@ -149,14 +248,28 @@ const mismatchedIdentityElmo = `<?xml version="1.0" encoding="UTF-8"?>
 app.get('/emrex', async (request, reply) => {
   const { sessionId, returnUrl } = request.query as { sessionId?: string; returnUrl?: string };
 
-  console.log(`[Mock EMREX] Received redirect - sessionId: ${sessionId}, returnUrl: ${returnUrl}`);
+  logger.info({
+    'event.action': 'emrex_redirect_received',
+    'event.outcome': 'success',
+    'event.category': ['web'],
+    'event.type': ['access'],
+    'app.sessionId': sessionId,
+    'app.returnUrl': returnUrl,
+  });
 
   if (!sessionId || !returnUrl) {
     return reply.code(400).send({ error: 'Missing sessionId or returnUrl' });
   }
 
   if (behavior === 'timeout') {
-    console.log('[Mock EMREX] Simulating timeout - not responding');
+    logger.info({
+      'event.action': 'emrex_timeout_simulation',
+      'event.outcome': 'unknown',
+      'event.category': ['web'],
+      'event.type': ['info'],
+      'app.sessionId': sessionId,
+      'app.behavior': 'timeout',
+    });
     // Never respond - simulate timeout
     return new Promise(() => {}); // Hang forever
   }
@@ -210,22 +323,37 @@ app.get('/emrex', async (request, reply) => {
 
   // Rewrite URL for Docker networking
   const targetUrl = rewriteUrlForDocker(returnUrl);
-  console.log(`[Mock EMREX] Sending response to Bridge - returnCode: ${returnCode}, url: ${targetUrl}`);
+  logger.info({
+    'event.action': 'emrex_response_sending',
+    'event.outcome': 'success',
+    'event.category': ['web', 'network'],
+    'event.type': ['connection', 'start'],
+    'app.sessionId': sessionId,
+    'app.returnCode': returnCode,
+    'app.targetUrl': targetUrl,
+    'app.behavior': behavior,
+  });
 
   // POST to Bridge's /store endpoint (simulating the callback)
   try {
-    const response = await fetch(targetUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        sessionId,
-        returnCode,
-        ...(elmoData && { elmo: elmoData }),
-        ...(returnMessage && { returnMessage }),
-      }),
+    const bodyParams = new URLSearchParams({
+      sessionId,
+      returnCode,
+      ...(elmoData && { elmo: elmoData }),
+      ...(returnMessage && { returnMessage }),
     });
 
-    console.log(`[Mock EMREX] Bridge response status: ${response.status}`);
+    const response = await httpPost(targetUrl, bodyParams.toString());
+
+    logger.info({
+      'event.action': 'emrex_response_sent',
+      'event.outcome': response.status >= 200 && response.status < 400 ? 'success' : 'failure',
+      'event.category': ['web', 'network'],
+      'event.type': ['connection', 'end'],
+      'app.sessionId': sessionId,
+      'app.returnCode': returnCode,
+      'app.bridgeResponseStatus': response.status,
+    });
 
     // Return a simple HTML page (what user would see)
     reply.header('Content-Type', 'text/html');
@@ -240,7 +368,16 @@ app.get('/emrex', async (request, reply) => {
       </html>
     `;
   } catch (error) {
-    console.error('[Mock EMREX] Error sending to Bridge:', error);
+    logger.error({
+      'event.action': 'emrex_response_failed',
+      'event.outcome': 'failure',
+      'event.category': ['web', 'network'],
+      'event.type': ['error'],
+      'app.sessionId': sessionId,
+      'app.returnCode': returnCode,
+      'app.targetUrl': targetUrl,
+      'error.message': error instanceof Error ? error.message : String(error),
+    });
     reply.code(500);
     return { error: 'Failed to communicate with Bridge' };
   }
@@ -288,7 +425,14 @@ app.post('/test/behavior', async (request, reply) => {
     responseDelay = delay;
   }
 
-  console.log(`[Mock EMREX] Behavior set to: ${behavior}, delay: ${responseDelay}ms`);
+  logger.info({
+    'event.action': 'emrex_behavior_changed',
+    'event.outcome': 'success',
+    'event.category': ['configuration'],
+    'event.type': ['change'],
+    'app.behavior': behavior,
+    'app.responseDelay': responseDelay,
+  });
   return { behavior, responseDelay };
 });
 
@@ -319,7 +463,12 @@ Z+H5qm8r0wIDAQAB
 const MOCK_EMREX_ENDPOINT = process.env.MOCK_EMREX_ENDPOINT || `http://localhost:${PORT}/emrex`;
 
 app.get('/certificates', async () => {
-  console.log('[Mock EMREX] Certificate request received');
+  logger.info({
+    'event.action': 'emrex_certificate_request',
+    'event.outcome': 'success',
+    'event.category': ['authentication'],
+    'event.type': ['info'],
+  });
   return {
     ncps: [
       {
@@ -334,11 +483,23 @@ app.get('/certificates', async () => {
 async function start() {
   try {
     await app.listen({ port: Number(PORT), host: '0.0.0.0' });
-    console.log(`[Mock EMREX Provider] Running on port ${PORT}`);
-    console.log(`[Mock EMREX Provider] Endpoint: http://localhost:${PORT}/emrex`);
-    console.log(`[Mock EMREX Provider] Test API: http://localhost:${PORT}/test/*`);
+    logger.info({
+      'event.action': 'emrex_server_started',
+      'event.outcome': 'success',
+      'event.category': ['process'],
+      'event.type': ['start'],
+      'app.port': Number(PORT),
+      'app.endpoint': `http://localhost:${PORT}/emrex`,
+      'app.testApi': `http://localhost:${PORT}/test/*`,
+    });
   } catch (err) {
-    console.error(err);
+    logger.error({
+      'event.action': 'emrex_server_start_failed',
+      'event.outcome': 'failure',
+      'event.category': ['process'],
+      'event.type': ['error'],
+      'error.message': err instanceof Error ? err.message : String(err),
+    });
     process.exit(1);
   }
 }
