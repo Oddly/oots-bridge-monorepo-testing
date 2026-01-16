@@ -42,3 +42,7 @@ k8s/
 dist/
 build/
 *.tgz
+
+# Test artifacts
+test-results/
+playwright-report/
