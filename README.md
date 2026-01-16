@@ -148,9 +148,9 @@ The test suite validates structured logging across different execution paths:
 |------|------|-------------|--------|
 | 1 | Happy Path (Preview Required) | Initial request → PreviewRequired response | ✓ |
 | 2 | Happy Path (Evidence Delivered) | Request with PreviewLocation → Evidence delivered | ✓ |
-| 3 | No Preview Support | Direct error when preview not supported | TODO |
-| 4 | Request XML Validation Error | Malformed request XML | TODO |
-| 5 | Request Schematron Error | Request fails schematron validation | TODO |
+| 3 | No Preview Support | Direct error when preview not supported | ✓ |
+| 4 | Request XML Validation Error | Malformed request XML | ✓ |
+| 5 | Request Schematron Error | Request fails schematron validation | ✓ |
 | 6 | EMREX User Cancellation | User cancels → NCP_CANCEL → Error response | ✓ |
 | 7 | EMREX Provider Error | Provider error → NCP_ERROR → Error response | ✓ |
 | 8 | EMREX No Results | No records found → NCP_NO_RESULTS | ✓ |
