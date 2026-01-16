@@ -67,7 +67,7 @@ async function uploadPMode(gatewayUrl, pmodeFile, gatewayName) {
 
         // Wait for dashboard to load (look for PMode menu or similar)
         console.log('  Waiting for dashboard...');
-        await page.waitForSelector('text=PMode', { timeout: 15000 });
+        await page.waitForSelector('text=PMode', { timeout: 60000 });
 
         // Handle password change dialog if present (first login with default password)
         console.log('  Checking for password change dialog...');

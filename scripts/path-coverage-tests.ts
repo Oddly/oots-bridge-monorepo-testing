@@ -17,16 +17,22 @@
  * 10. EMREX Invalid XML/Schema
  * 11. EMREX Identity Mismatch
  * 12. Session Timeout (Redirect/Preview)
+ *
+ * KNOWN ISSUES:
+ * - Path 2 (Evidence Delivered) requires Bridge to skip EMREX signature validation
+ *   since the mock provider doesn't sign ELMO data. Set SKIP_EMREX_SIGNATURE_VALIDATION=true
+ *   in Bridge's environment (requires adding this config option to the Bridge).
  */
 
 import * as http from 'http';
+import * as https from 'https';
 import * as zlib from 'zlib';
 
 // Configuration
 const ES_HOST = process.env.ES_HOST || 'localhost';
 const ES_PORT = process.env.ES_PORT || '9200';
 const INDEX_PATTERN = 'oots-logs-*';
-const BRIDGE_URL = process.env.BRIDGE_URL || 'http://localhost:3003';
+const BRIDGE_URL = process.env.BRIDGE_URL || 'https://localhost:3443';
 const MOCK_EMREX_URL = process.env.MOCK_EMREX_URL || 'http://localhost:9081';
 const RED_GATEWAY_URL = process.env.RED_GATEWAY_URL || 'http://localhost:8280';
 const BLUE_GATEWAY_URL = process.env.BLUE_GATEWAY_URL || 'http://localhost:8180';
@@ -150,19 +156,22 @@ function httpRequest(
 ): Promise<{ status: number; body: string }> {
   return new Promise((resolve, reject) => {
     const parsed = new URL(url);
-    const reqOptions: http.RequestOptions = {
+    const isHttps = parsed.protocol === 'https:';
+    const reqOptions: http.RequestOptions | https.RequestOptions = {
       hostname: parsed.hostname,
-      port: parsed.port || 80,
+      port: parsed.port || (isHttps ? 443 : 80),
       path: parsed.pathname + parsed.search,
       method: options.method || 'GET',
       headers: options.headers || {},
+      rejectUnauthorized: false, // Accept self-signed certs for testing
     };
 
     if (options.auth) {
       reqOptions.auth = `${options.auth.user}:${options.auth.pass}`;
     }
 
-    const req = http.request(reqOptions, (res) => {
+    const transport = isHttps ? https : http;
+    const req = transport.request(reqOptions, (res) => {
       let body = '';
       res.on('data', (chunk) => (body += chunk));
       res.on('end', () => {
@@ -194,7 +203,7 @@ function sleep(ms: number): Promise<void> {
 // Request Triggers
 // ============================================================================
 
-function generateIds(): { queryId: string; messageId: string; conversationId: string } {
+function generateIds(pathId: number): { queryId: string; messageId: string; conversationId: string } {
   const uuid = () => 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
     const r = (Math.random() * 16) | 0;
     return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
@@ -203,8 +212,128 @@ function generateIds(): { queryId: string; messageId: string; conversationId: st
   return {
     queryId: `urn:uuid:${uuid()}`,
     messageId: `${uuid()}@domibus.eu`,
-    conversationId: uuid(),
+    // Prefix with path ID for easy filtering in Kibana: "path-N-uuid"
+    conversationId: `path-${pathId}-${uuid()}`,
   };
+}
+
+function createMalformedXml(): string {
+  // XML with missing closing tag - will fail XML parsing
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<query:QueryRequest xmlns:query="urn:oasis:names:tc:ebxml-regrep:xsd:query:4.0">
+    <rim:Slot name="Test">
+        <rim:SlotValue>
+            <rim:Value>This XML is malformed - missing closing tags`;
+}
+
+function createSchematronInvalidRequest(queryId: string, timestamp: string): string {
+  // Valid XML with EvidenceProvider/Requester (passes null safety checks)
+  // but MISSING the required Procedure slot (fails schematron R-EDM-REQ-S007)
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<query:QueryRequest
+    xmlns:eb="http://docs.oasis-open.org/ebxml-msg/ebms/v3.0/ns/core/200704/"
+    xmlns:S12="http://www.w3.org/2003/05/soap-envelope"
+    xmlns:rim="urn:oasis:names:tc:ebxml-regrep:xsd:rim:4.0"
+    xmlns:ns4="urn:oasis:names:tc:ebxml-regrep:xsd:lcm:4.0"
+    xmlns:ns5="http://www.w3.org/1999/xlink"
+    xmlns:ns6="http://www.w3.org/2005/08/addressing"
+    xmlns:rs="urn:oasis:names:tc:ebxml-regrep:xsd:rs:4.0"
+    xmlns:ns8="urn:oasis:names:tc:ebxml-regrep:xsd:spi:4.0"
+    xmlns:query="urn:oasis:names:tc:ebxml-regrep:xsd:query:4.0"
+    xmlns:sdg="http://data.europa.eu/p4s"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    id="${queryId}">
+
+    <rim:Slot name="SpecificationIdentifier">
+        <rim:SlotValue xsi:type="rim:StringValueType">
+            <rim:Value>oots-edm:v1.0</rim:Value>
+        </rim:SlotValue>
+    </rim:Slot>
+
+    <rim:Slot name="IssueDateTime">
+        <rim:SlotValue xsi:type="rim:DateTimeValueType">
+            <rim:Value>${timestamp}</rim:Value>
+        </rim:SlotValue>
+    </rim:Slot>
+
+    <!-- MISSING: Procedure slot - this will fail schematron R-EDM-REQ-S007 -->
+
+    <rim:Slot name="PossibilityForPreview">
+        <rim:SlotValue xsi:type="rim:BooleanValueType">
+            <rim:Value>true</rim:Value>
+        </rim:SlotValue>
+    </rim:Slot>
+
+    <rim:Slot name="ExplicitRequestGiven">
+        <rim:SlotValue xsi:type="rim:BooleanValueType">
+            <rim:Value>true</rim:Value>
+        </rim:SlotValue>
+    </rim:Slot>
+
+    <rim:Slot name="Requirements">
+        <rim:SlotValue xsi:type="rim:CollectionValueType" collectionType="urn:oasis:names:tc:ebxml-regrep:CollectionType:Set">
+            <rim:Element xsi:type="rim:AnyValueType">
+                <sdg:Requirement>
+                    <sdg:Identifier>https://sr.oots.tech.ec.europa.eu/requirements/test-requirement</sdg:Identifier>
+                    <sdg:Name lang="EN">Test Requirement</sdg:Name>
+                </sdg:Requirement>
+            </rim:Element>
+        </rim:SlotValue>
+    </rim:Slot>
+
+    <rim:Slot name="EvidenceRequester">
+        <rim:SlotValue xsi:type="rim:CollectionValueType" collectionType="urn:oasis:names:tc:ebxml-regrep:CollectionType:Set">
+            <rim:Element xsi:type="rim:AnyValueType">
+                <sdg:Agent>
+                    <sdg:Identifier schemeID="urn:cef.eu:names:identifier:EAS:0106">50973029</sdg:Identifier>
+                    <sdg:Name lang="EN">Test Requester</sdg:Name>
+                    <sdg:Address>
+                        <sdg:AdminUnitLevel1>NL</sdg:AdminUnitLevel1>
+                    </sdg:Address>
+                    <sdg:Classification>ER</sdg:Classification>
+                </sdg:Agent>
+            </rim:Element>
+        </rim:SlotValue>
+    </rim:Slot>
+
+    <rim:Slot name="EvidenceProvider">
+        <rim:SlotValue xsi:type="rim:AnyValueType">
+            <sdg:Agent>
+                <sdg:Identifier schemeID="urn:oasis:names:tc:ebcore:partyid-type:unregistered:NL">00000001800866472000</sdg:Identifier>
+                <sdg:Name lang="EN">Test Provider</sdg:Name>
+            </sdg:Agent>
+        </rim:SlotValue>
+    </rim:Slot>
+
+    <query:ResponseOption returnType="LeafClassWithRepositoryItem"/>
+
+    <query:Query queryDefinition="DocumentQuery">
+        <rim:Slot name="NaturalPerson">
+            <rim:SlotValue xsi:type="rim:AnyValueType">
+                <sdg:Person>
+                    <sdg:LevelOfAssurance>High</sdg:LevelOfAssurance>
+                    <sdg:FamilyName>Smith</sdg:FamilyName>
+                    <sdg:GivenName>Jonas</sdg:GivenName>
+                    <sdg:DateOfBirth>1999-03-01</sdg:DateOfBirth>
+                </sdg:Person>
+            </rim:SlotValue>
+        </rim:Slot>
+
+        <rim:Slot name="EvidenceRequest">
+            <rim:SlotValue xsi:type="rim:AnyValueType">
+                <sdg:DataServiceEvidenceType>
+                    <sdg:Identifier>test-evidence-id</sdg:Identifier>
+                    <sdg:EvidenceTypeClassification>https://sr.oots.tech.ec.europa.eu/test</sdg:EvidenceTypeClassification>
+                    <sdg:Title lang="EN">Test Evidence</sdg:Title>
+                    <sdg:DistributedAs>
+                        <sdg:Format>application/pdf</sdg:Format>
+                    </sdg:DistributedAs>
+                </sdg:DataServiceEvidenceType>
+            </rim:SlotValue>
+        </rim:Slot>
+    </query:Query>
+
+</query:QueryRequest>`;
 }
 
 function createQueryRequest(options: {
@@ -213,13 +342,13 @@ function createQueryRequest(options: {
   possibilityForPreview?: boolean;
   previewLocation?: string;
 }): string {
-  const previewSlot = options.possibilityForPreview !== false
-    ? `<rim:Slot name="PossibilityForPreview">
+  // PossibilityForPreview slot is REQUIRED by schematron (R-EDM-REQ-S009)
+  // When false, Bridge should return STATE_VALIDATION_ERROR (preview not supported)
+  const previewSlot = `<rim:Slot name="PossibilityForPreview">
         <rim:SlotValue xsi:type="rim:BooleanValueType">
-            <rim:Value>true</rim:Value>
+            <rim:Value>${options.possibilityForPreview !== false ? 'true' : 'false'}</rim:Value>
         </rim:SlotValue>
-    </rim:Slot>`
-    : '';
+    </rim:Slot>`;
 
   const previewLocationSlot = options.previewLocation
     ? `<rim:Slot name="PreviewLocation">
@@ -229,14 +358,21 @@ function createQueryRequest(options: {
     </rim:Slot>`
     : '';
 
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<query:QueryRequest xmlns:query="urn:oasis:names:tc:ebxml-regrep:xsd:query:4.0"
-                    xmlns:rim="urn:oasis:names:tc:ebxml-regrep:xsd:rim:4.0"
-                    xmlns:rs="urn:oasis:names:tc:ebxml-regrep:xsd:rs:4.0"
-                    xmlns:sdg="http://data.europa.eu/p4s"
-                    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-                    xmlns:xlink="http://www.w3.org/1999/xlink"
-                    id="${options.queryId}">
+  // Namespace declarations match production QueryRequest format
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<query:QueryRequest
+    xmlns:eb="http://docs.oasis-open.org/ebxml-msg/ebms/v3.0/ns/core/200704/"
+    xmlns:S12="http://www.w3.org/2003/05/soap-envelope"
+    xmlns:rim="urn:oasis:names:tc:ebxml-regrep:xsd:rim:4.0"
+    xmlns:ns4="urn:oasis:names:tc:ebxml-regrep:xsd:lcm:4.0"
+    xmlns:ns5="http://www.w3.org/1999/xlink"
+    xmlns:ns6="http://www.w3.org/2005/08/addressing"
+    xmlns:rs="urn:oasis:names:tc:ebxml-regrep:xsd:rs:4.0"
+    xmlns:ns8="urn:oasis:names:tc:ebxml-regrep:xsd:spi:4.0"
+    xmlns:query="urn:oasis:names:tc:ebxml-regrep:xsd:query:4.0"
+    xmlns:sdg="http://data.europa.eu/p4s"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    id="${options.queryId}">
 
     <rim:Slot name="SpecificationIdentifier">
         <rim:SlotValue xsi:type="rim:StringValueType">
@@ -479,8 +615,9 @@ const testPaths: TestPath[] = [
     name: 'Happy Path (Preview Required)',
     description: 'Initial request without PreviewLocation → Preview Required response',
     expectedLogs: [
-      { eventAction: 'domibus_message_retrieval_started', logger: 'APP', outcome: 'success' },
-      { eventAction: 'domibus_message_retrieval_completed', logger: 'APP', outcome: 'success' },
+      // These logs don't have conversationId - logged before XML parsing extracts it
+      { eventAction: 'domibus_message_retrieval_started', logger: 'APP', outcome: 'success', optional: true },
+      { eventAction: 'domibus_message_retrieval_completed', logger: 'APP', outcome: 'success', optional: true },
       { eventAction: 'oots_request_xml_validation_completed', logger: 'APP', outcome: 'success' },
       { eventAction: 'oots_request_schematron_validation_completed', logger: 'APP', outcome: 'success' },
       { eventAction: 'evidence_request_received', outcome: 'success', requiredFields: ['oots.message.id', 'oots.conversation.id'] },
@@ -508,12 +645,13 @@ const testPaths: TestPath[] = [
     emrexBehavior: 'success',
     withPreviewLocation: true,
     expectedLogs: [
-      { eventAction: 'domibus_message_retrieval_started', logger: 'APP' },
-      { eventAction: 'domibus_message_retrieval_completed', logger: 'APP', outcome: 'success' },
+      // These logs don't have conversationId - logged before XML parsing extracts it
+      { eventAction: 'domibus_message_retrieval_started', logger: 'APP', optional: true },
+      { eventAction: 'domibus_message_retrieval_completed', logger: 'APP', outcome: 'success', optional: true },
       { eventAction: 'oots_request_xml_validation_completed', logger: 'APP', outcome: 'success' },
       { eventAction: 'oots_request_schematron_validation_completed', logger: 'APP', outcome: 'success' },
       { eventAction: 'evidence_request_received' },
-      { eventAction: 'user_redirected_to_emrex', logger: 'EXT', outcome: 'success' },
+      { eventAction: 'user_redirected_to_emrex', logger: 'EXT', outcome: 'success', optional: true }, // Test bypasses frontend redirect
       { eventAction: 'emrex_response_received', logger: 'EXT', outcome: 'success' },
       { eventAction: 'emrex_xml_validation_completed', logger: 'APP', outcome: 'success', optional: true },
       { eventAction: 'elm_converter_request_sent', logger: 'EXT', optional: true },
@@ -540,6 +678,76 @@ const testPaths: TestPath[] = [
     waitTime: 30000,
   },
 
+  // Path 3: No Preview Support
+  // Request with PossibilityForPreview=false (no PreviewLocation) → PREVIEW_REQUIRED response
+  {
+    id: 3,
+    name: 'No Preview Support',
+    description: 'Request with PossibilityForPreview=false → PREVIEW_REQUIRED response',
+    expectedLogs: [
+      { eventAction: 'domibus_message_retrieval_started', logger: 'APP', optional: true },
+      { eventAction: 'domibus_message_retrieval_completed', logger: 'APP', outcome: 'success', optional: true },
+      { eventAction: 'oots_request_xml_validation_completed', logger: 'APP', outcome: 'success' },
+      { eventAction: 'oots_request_schematron_validation_completed', logger: 'APP', outcome: 'success' },
+      { eventAction: 'evidence_request_received' },
+      // PREVIEW_REQUIRED is a valid workflow state, so outcome is 'success' (not a failure)
+      { eventAction: 'evidence_response_sent', outcome: 'success' },
+      { eventAction: 'domibus_message_submission_completed', logger: 'APP', outcome: 'success' },
+    ],
+    trigger: async (ids) => {
+      const request = createQueryRequest({
+        queryId: ids.queryId,
+        timestamp: new Date().toISOString(),
+        possibilityForPreview: false,
+      });
+      await submitToDomibus(ids.conversationId, ids.messageId, request);
+    },
+    waitTime: 20000,
+  },
+
+  // Path 4: Request XML Validation Error
+  {
+    id: 4,
+    name: 'Request XML Validation Error',
+    description: 'Malformed XML → XML parsing fails → No error response (cannot extract provider/requester)',
+    expectedLogs: [
+      { eventAction: 'domibus_message_retrieval_started', logger: 'APP', optional: true },
+      { eventAction: 'domibus_message_retrieval_completed', logger: 'APP', outcome: 'success', optional: true },
+      { eventAction: 'oots_request_xml_validation_completed', logger: 'APP', outcome: 'failure' },
+      { eventAction: 'message_processing_completed', logger: 'APP', outcome: 'failure' },
+      // Note: No evidence_response_sent or domibus_message_submission_completed
+      // because we cannot create a QueryResponseError without provider/requester info
+    ],
+    trigger: async (ids) => {
+      const malformedXml = createMalformedXml();
+      await submitToDomibus(ids.conversationId, ids.messageId, malformedXml);
+    },
+    waitTime: 20000,
+  },
+
+  // Path 5: Request Schematron Validation Error
+  {
+    id: 5,
+    name: 'Request Schematron Error',
+    description: 'Valid XML but fails schematron → Validation error response',
+    expectedLogs: [
+      { eventAction: 'domibus_message_retrieval_started', logger: 'APP', optional: true },
+      { eventAction: 'domibus_message_retrieval_completed', logger: 'APP', outcome: 'success', optional: true },
+      { eventAction: 'oots_request_xml_validation_completed', logger: 'APP', outcome: 'success' },
+      { eventAction: 'oots_request_schematron_validation_completed', logger: 'APP', outcome: 'failure' },
+      { eventAction: 'evidence_response_sent', outcome: 'failure' },
+      { eventAction: 'domibus_message_submission_completed', logger: 'APP', outcome: 'success' },
+    ],
+    trigger: async (ids) => {
+      const schematronInvalidRequest = createSchematronInvalidRequest(
+        ids.queryId,
+        new Date().toISOString()
+      );
+      await submitToDomibus(ids.conversationId, ids.messageId, schematronInvalidRequest);
+    },
+    waitTime: 20000,
+  },
+
   // Path 6: EMREX User Cancellation
   {
     id: 6,
@@ -549,7 +757,7 @@ const testPaths: TestPath[] = [
     withPreviewLocation: true,
     expectedLogs: [
       { eventAction: 'evidence_request_received' },
-      { eventAction: 'user_redirected_to_emrex', logger: 'EXT', outcome: 'success' },
+      { eventAction: 'user_redirected_to_emrex', logger: 'EXT', outcome: 'success', optional: true }, // Test bypasses frontend redirect
       { eventAction: 'emrex_response_received', logger: 'EXT' },
       { eventAction: 'evidence_response_sent', outcome: 'failure' },
     ],
@@ -720,7 +928,7 @@ const testPaths: TestPath[] = [
     withPreviewLocation: true,
     expectedLogs: [
       { eventAction: 'evidence_request_received' },
-      { eventAction: 'user_redirected_to_emrex', logger: 'EXT', outcome: 'success' },
+      { eventAction: 'user_redirected_to_emrex', logger: 'EXT', outcome: 'success', optional: true }, // Test bypasses frontend redirect
       { eventAction: 'session_timeout', logger: 'APP', optional: true },
     ],
     trigger: async (ids) => {
@@ -745,7 +953,7 @@ const testPaths: TestPath[] = [
 async function runTest(path: TestPath): Promise<TestResult> {
   const startTime = Date.now();
   const errors: string[] = [];
-  const ids = generateIds();
+  const ids = generateIds(path.id);
 
   console.log(`\n${'='.repeat(60)}`);
   console.log(`[Path ${path.id}] ${path.name}`);
