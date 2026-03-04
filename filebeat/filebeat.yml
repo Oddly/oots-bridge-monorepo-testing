@@ -8,6 +8,7 @@ filebeat.inputs:
     enabled: true
     paths:
       - /var/log/bridge/app-logs.log
+    scan_frequency: 2s
     json:
       keys_under_root: true
       overwrite_keys: true
@@ -23,6 +24,7 @@ filebeat.inputs:
     enabled: true
     paths:
       - /var/log/bridge/oots-logs.log
+    scan_frequency: 2s
     json:
       keys_under_root: true
       overwrite_keys: true
@@ -38,6 +40,7 @@ filebeat.inputs:
     enabled: true
     paths:
       - /var/log/bridge/ext-logs.log
+    scan_frequency: 2s
     json:
       keys_under_root: true
       overwrite_keys: true
@@ -63,6 +66,7 @@ output.elasticsearch:
   hosts: ["elasticsearch:9200"]
   index: "oots-logs-%{+yyyy.MM.dd}"
   pipeline: "oots-test-path"
+  flush_interval: 1s
 
 setup.template:
   enabled: false

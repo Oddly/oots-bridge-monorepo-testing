@@ -5,9 +5,12 @@ node_modules/
 *.log
 logs/
 
-# Environment
+# Environment (secrets - never commit)
 .env
-.env.*
+
+# Track these configuration templates
+!.env.example
+!versions.env
 
 # IDE
 .vscode/

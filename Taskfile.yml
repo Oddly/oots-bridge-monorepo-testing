@@ -1,8 +1,12 @@
 # https://taskfile.dev
 version: "3"
 
+# Load component versions from versions.env
+dotenv: ['versions.env', '.env']
+
 vars:
   BRIDGE_REPO: ../oots-bridge-monorepo
+  BRIDGE_REMOTE: https://code.europa.eu/oots/tdd/oots-bridge-monorepo.git
 
 tasks:
   default:
@@ -10,15 +14,110 @@ tasks:
     cmds:
       - task --list
 
+  check:
+    desc: "Check that all required tools are installed"
+    cmds:
+      - |
+        echo "Checking prerequisites..."
+        MISSING=""
+
+        # Check Docker
+        if command -v docker &> /dev/null; then
+          echo "✓ docker $(docker --version | cut -d' ' -f3 | tr -d ',')"
+        else
+          echo "✗ docker - not found"
+          MISSING="$MISSING docker"
+        fi
+
+        # Check Docker Compose
+        if docker compose version &> /dev/null; then
+          echo "✓ docker compose $(docker compose version --short)"
+        else
+          echo "✗ docker compose - not found"
+          MISSING="$MISSING docker-compose"
+        fi
+
+        # Check Node.js
+        if command -v node &> /dev/null; then
+          echo "✓ node $(node --version)"
+        else
+          echo "✗ node - not found"
+          MISSING="$MISSING nodejs"
+        fi
+
+        # Check npm
+        if command -v npm &> /dev/null; then
+          echo "✓ npm $(npm --version)"
+        else
+          echo "✗ npm - not found"
+          MISSING="$MISSING npm"
+        fi
+
+        # Check Task
+        if command -v task &> /dev/null; then
+          echo "✓ task $(task --version | head -1)"
+        else
+          echo "✗ task - not found"
+          MISSING="$MISSING go-task"
+        fi
+
+        # Check curl
+        if command -v curl &> /dev/null; then
+          echo "✓ curl $(curl --version | head -1 | cut -d' ' -f2)"
+        else
+          echo "✗ curl - not found"
+          MISSING="$MISSING curl"
+        fi
+
+        # Check openssl (for keystore generation)
+        if command -v openssl &> /dev/null; then
+          echo "✓ openssl $(openssl version | cut -d' ' -f2)"
+        else
+          echo "✗ openssl - not found"
+          MISSING="$MISSING openssl"
+        fi
+
+        # Check keytool (for keystore generation)
+        if command -v keytool &> /dev/null; then
+          echo "✓ keytool (Java keytool found)"
+        else
+          echo "⚠ keytool - not found (optional, needed for keystore generation)"
+        fi
+
+        echo ""
+        if [ -n "$MISSING" ]; then
+          echo "Missing required tools:$MISSING"
+          echo ""
+          echo "See README.md for installation instructions."
+          exit 1
+        else
+          echo "All required tools are installed!"
+        fi
+
   # ==========================================================================
   # Setup Tasks
   # ==========================================================================
+
+  versions:
+    desc: "Show component versions from versions.env"
+    cmds:
+      - |
+        echo "Component Versions:"
+        echo "  Domibus:     ${DOMIBUS_VERSION:-not set}"
+        echo "  MySQL:       ${MYSQL_VERSION:-not set}"
+        echo "  ActiveMQ:    ${ACTIVEMQ_ARTEMIS_VERSION:-not set}"
+        echo "  Elasticsearch: ${ELASTICSEARCH_VERSION:-not set}"
+        echo "  Kibana:      ${KIBANA_VERSION:-not set}"
+        echo "  Filebeat:    ${FILEBEAT_VERSION:-not set}"
+        echo "  nginx:       ${NGINX_VERSION:-not set}"
+        echo "  Node.js:     ${NODE_VERSION:-not set}"
 
   setup:
     desc: "Run all setup tasks (keystores + domibus + bridge image)"
     cmds:
       - task: setup:keystores
       - task: setup:domibus
+      - task: setup:domibus-image
       - task: setup:bridge-image
 
   setup:keystores:
@@ -38,22 +137,44 @@ tasks:
       - test -f domibus/sql/mysql-5.1.9.ddl
       - test -f domibus/conf/plugins/lib/domibus-default-ws-plugin-5.1.9.jar
 
-  setup:bridge-image:
-    desc: "Build bridge image from feature branch"
-    dir: "{{.BRIDGE_REPO}}"
+  setup:domibus-image:
+    desc: "Build Domibus Docker image from official EC eDelivery WAR"
     cmds:
+      - echo "Building Domibus image (version ${DOMIBUS_VERSION:-5.1.9})..."
+      - docker build -t domibus:${DOMIBUS_VERSION:-5.1.9} domibus/
+    status:
+      - docker image inspect domibus:${DOMIBUS_VERSION:-5.1.9} >/dev/null 2>&1
+
+  setup:bridge-image:
+    desc: "Build bridge image (uses local checkout or clones from public repo)"
+    cmds:
+      - |
+        if [ ! -d "{{.BRIDGE_REPO}}" ]; then
+          echo "Local monorepo not found at {{.BRIDGE_REPO}}, cloning from {{.BRIDGE_REMOTE}}..."
+          git clone --depth 1 {{.BRIDGE_REMOTE}} {{.BRIDGE_REPO}}
+        fi
       - echo "Building monorepo base image..."
-      - docker build -t oots-emrex/monorepo:latest -f Dockerfile .
+      - docker build -t oots-emrex/monorepo:latest -f {{.BRIDGE_REPO}}/Dockerfile {{.BRIDGE_REPO}}
       - echo "Building bridge backend image..."
-      - docker build -t oots-bridge:latest -f apps/bridge/backend/Dockerfile .
+      - docker build -t oots-bridge:latest -f {{.BRIDGE_REPO}}/apps/bridge/backend/Dockerfile {{.BRIDGE_REPO}}
 
   # ==========================================================================
   # Full E2E Stack (Red/Blue Domibus + Bridge + ELK)
   # ==========================================================================
 
+  e2e:config:
+    desc: "Show resolved docker-compose configuration with versions"
+    cmds:
+      - docker compose -f docker-compose.e2e.yml config
+
+  e2e:images:
+    desc: "Show images that will be used (from versions.env)"
+    cmds:
+      - docker compose -f docker-compose.e2e.yml config | grep -E "image:" | sort -u
+
   e2e:start:
     desc: "Start complete E2E stack with single command"
-    deps: [setup:keystores, setup:domibus]
+    deps: [setup:keystores, setup:domibus, setup:domibus-image]
     cmds:
       - echo "Starting OOTS E2E Stack..."
       - docker compose -f docker-compose.e2e.yml up -d
@@ -132,7 +253,7 @@ tasks:
     desc: "Complete cleanup - remove containers, volumes, images, and keystores"
     cmds:
       - docker compose -f docker-compose.e2e.yml down -v --remove-orphans
-      - docker rmi oots-bridge:latest oots-emrex/monorepo:latest oots-bridge-monorepo-testing-mock-emrex:latest 2>/dev/null || true
+      - docker rmi oots-bridge:latest oots-emrex/monorepo:latest oots-bridge-monorepo-testing-mock-emrex:latest domibus:${DOMIBUS_VERSION:-5.1.9} 2>/dev/null || true
       - rm -rf domibus/conf/keystores/* domibus/conf-red/keystores/*
       - echo "All E2E resources removed. Run 'task setup && task e2e:start' to rebuild."
 
@@ -331,6 +452,16 @@ tasks:
     cmds:
       - npx tsx scripts/path-coverage-tests.ts --path=12 --skip-prereqs
 
+  e2e:test:13:
+    desc: "Path 13: Multi-Report ELMO"
+    cmds:
+      - npx tsx scripts/path-coverage-tests.ts --path=13 --skip-prereqs
+
+  e2e:test:14:
+    desc: "Path 14: Large Payload Stress Test"
+    cmds:
+      - npx tsx scripts/path-coverage-tests.ts --path=14 --skip-prereqs
+
   e2e:clear-logs:
     desc: "Clear all logs from Elasticsearch (fresh test run)"
     cmds:
@@ -373,6 +504,11 @@ tasks:
         curl -sf http://localhost:3003/health > /dev/null && echo "  Bridge:     OK" || echo "  Bridge:     FAIL"
         curl -sf http://localhost:9081/health > /dev/null && echo "  Mock EMREX: OK" || echo "  Mock EMREX: FAIL"
         curl -sf http://localhost:9200/_cluster/health > /dev/null && echo "  ES:         OK" || echo "  ES:         FAIL"
+
+  e2e:summary:
+    desc: "Show per-request summary from Elasticsearch (one line per request)"
+    cmds:
+      - ./scripts/request-summary.sh {{.CLI_ARGS}}
 
   # ==========================================================================
   # Legacy Single Domibus Stack (for backward compatibility)

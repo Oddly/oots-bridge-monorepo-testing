@@ -130,27 +130,31 @@ function rewriteUrlForDocker(url: string): string {
 
 const app = Fastify({ logger: false });
 
-// Sample ELMO data (schema-compliant)
+// Sample ELMO data (schema-compliant with realistic Dutch data)
 const sampleElmo = `<?xml version="1.0" encoding="UTF-8"?>
 <elmo xmlns="https://github.com/emrex-eu/elmo-schemas/tree/v1"
       xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
   <generatedDate>2025-01-09T10:00:00Z</generatedDate>
   <learner>
     <citizenship>NL</citizenship>
-    <identifier type="nationalIdentifier">BSN123456789</identifier>
+    <identifier type="nationalIdentifier">111222333</identifier>
     <givenNames>Jonas</givenNames>
     <familyName>Smith</familyName>
     <bday>1999-03-01</bday>
   </learner>
   <report>
     <issuer>
+      <identifier type="pic">999990073</identifier>
       <identifier type="schac">urn:schac:personalUniqueCode:nl:local:universityX</identifier>
       <title xml:lang="en">University X</title>
+      <title xml:lang="nl">Universiteit X</title>
+      <country>NL</country>
       <url>https://universityx.nl</url>
     </issuer>
     <learningOpportunitySpecification>
       <identifier type="local">DEGREE-001</identifier>
       <title xml:lang="en">Bachelor of Science in Computer Science</title>
+      <title xml:lang="nl">Bachelor of Science in Informatica</title>
       <type>Degree Programme</type>
       <iscedCode>0613</iscedCode>
       <specifies>
@@ -159,13 +163,85 @@ const sampleElmo = `<?xml version="1.0" encoding="UTF-8"?>
           <date>2021-06-30</date>
           <status>passed</status>
           <resultLabel>Cum Laude</resultLabel>
+          <gradingSchemeLocalId>GS-NL-10</gradingSchemeLocalId>
           <credit>
             <scheme>ects</scheme>
             <value>180</value>
           </credit>
         </learningOpportunityInstance>
       </specifies>
+      <hasPart>
+        <learningOpportunitySpecification>
+          <identifier type="local">COURSE-CS101</identifier>
+          <title xml:lang="en">Introduction to Programming</title>
+          <title xml:lang="nl">Inleiding Programmeren</title>
+          <type>Course</type>
+          <iscedCode>0613</iscedCode>
+          <specifies>
+            <learningOpportunityInstance>
+              <start>2017-09-01</start>
+              <date>2018-01-31</date>
+              <status>passed</status>
+              <resultLabel>8</resultLabel>
+              <gradingSchemeLocalId>GS-NL-10</gradingSchemeLocalId>
+              <credit>
+                <scheme>ects</scheme>
+                <value>6</value>
+              </credit>
+            </learningOpportunityInstance>
+          </specifies>
+        </learningOpportunitySpecification>
+      </hasPart>
+      <hasPart>
+        <learningOpportunitySpecification>
+          <identifier type="local">COURSE-CS201</identifier>
+          <title xml:lang="en">Data Structures and Algorithms</title>
+          <title xml:lang="nl">Datastructuren en Algoritmen</title>
+          <type>Course</type>
+          <iscedCode>0613</iscedCode>
+          <specifies>
+            <learningOpportunityInstance>
+              <start>2018-02-01</start>
+              <date>2018-06-30</date>
+              <status>passed</status>
+              <resultLabel>9</resultLabel>
+              <gradingSchemeLocalId>GS-NL-10</gradingSchemeLocalId>
+              <credit>
+                <scheme>ects</scheme>
+                <value>6</value>
+              </credit>
+            </learningOpportunityInstance>
+          </specifies>
+        </learningOpportunitySpecification>
+      </hasPart>
+      <hasPart>
+        <learningOpportunitySpecification>
+          <identifier type="local">COURSE-CS301</identifier>
+          <title xml:lang="en">Software Engineering</title>
+          <title xml:lang="nl">Software Engineering</title>
+          <type>Course</type>
+          <iscedCode>0613</iscedCode>
+          <specifies>
+            <learningOpportunityInstance>
+              <start>2019-09-01</start>
+              <date>2020-01-31</date>
+              <status>passed</status>
+              <resultLabel>7</resultLabel>
+              <gradingSchemeLocalId>GS-NL-10</gradingSchemeLocalId>
+              <credit>
+                <scheme>ects</scheme>
+                <value>6</value>
+              </credit>
+            </learningOpportunityInstance>
+          </specifies>
+        </learningOpportunitySpecification>
+      </hasPart>
     </learningOpportunitySpecification>
+    <gradingScheme localId="GS-NL-10">
+      <title xml:lang="en">Dutch 10-point scale</title>
+      <title xml:lang="nl">Nederlands 10-punts schaal</title>
+      <description xml:lang="en">Standard Dutch grading scale from 1-10, where 10 is excellent and 6 is the minimum passing grade.</description>
+    </gradingScheme>
     <issueDate>2021-06-30T00:00:00Z</issueDate>
   </report>
   <attachment>
@@ -183,25 +259,49 @@ type BehaviorMode =
   | 'cancel'
   | 'invalid_gzip'
   | 'invalid_xml'
-  | 'identity_mismatch';
+  | 'identity_mismatch'
+  | 'multi_report'
+  | 'large_payload'
+  | 'realistic_transcript';
 
 let behavior: BehaviorMode = 'success';
 let responseDelay = 0; // milliseconds
 
-// Invalid XML that will fail schema validation
+// Invalid ELMO - structurally valid XML but semantically invalid (missing required elements)
+// - Missing LOS identifier (schema requires it)
+// - Missing LOI start date (schema requires it)
 const invalidElmoXml = `<?xml version="1.0" encoding="UTF-8"?>
-<elmo xmlns="https://github.com/emrex-eu/elmo-schemas/tree/v1">
+<elmo xmlns="https://github.com/emrex-eu/elmo-schemas/tree/v1"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
   <generatedDate>2025-01-14T10:00:00Z</generatedDate>
   <learner>
+    <citizenship>NL</citizenship>
     <givenNames>Jonas</givenNames>
     <familyName>Smith</familyName>
     <bday>1999-03-01</bday>
   </learner>
   <report>
     <issuer>
-      <identifier type="schac">invalid</identifier>
+      <identifier type="schac">urn:schac:personalUniqueCode:nl:local:universityX</identifier>
+      <title xml:lang="en">University X</title>
       <country>NL</country>
     </issuer>
+    <learningOpportunitySpecification>
+      <!-- MISSING: identifier (required by schema) -->
+      <title xml:lang="en">Bachelor of Science</title>
+      <type>Degree Programme</type>
+      <specifies>
+        <learningOpportunityInstance>
+          <!-- MISSING: start date (required by schema) -->
+          <status>passed</status>
+          <credit>
+            <scheme>ects</scheme>
+            <value>180</value>
+          </credit>
+        </learningOpportunityInstance>
+      </specifies>
+    </learningOpportunitySpecification>
+    <issueDate>2021-06-30T00:00:00Z</issueDate>
   </report>
 </elmo>`;
 
@@ -242,6 +342,379 @@ const mismatchedIdentityElmo = `<?xml version="1.0" encoding="UTF-8"?>
     </learningOpportunitySpecification>
     <issueDate>2021-06-30T00:00:00Z</issueDate>
   </report>
+</elmo>`;
+
+// Multi-report ELMO - two reports from different institutions
+const multiReportElmo = `<?xml version="1.0" encoding="UTF-8"?>
+<elmo xmlns="https://github.com/emrex-eu/elmo-schemas/tree/v1"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <generatedDate>2025-01-15T10:00:00Z</generatedDate>
+  <learner>
+    <citizenship>NL</citizenship>
+    <identifier type="nationalIdentifier">111222333</identifier>
+    <givenNames>Jonas</givenNames>
+    <familyName>Smith</familyName>
+    <bday>1999-03-01</bday>
+  </learner>
+  <report>
+    <issuer>
+      <identifier type="pic">999990073</identifier>
+      <identifier type="schac">urn:schac:personalUniqueCode:nl:local:universityX</identifier>
+      <title xml:lang="en">University X</title>
+      <title xml:lang="nl">Universiteit X</title>
+      <country>NL</country>
+      <url>https://universityx.nl</url>
+    </issuer>
+    <learningOpportunitySpecification>
+      <identifier type="local">DEGREE-BSC-001</identifier>
+      <title xml:lang="en">Bachelor of Science in Computer Science</title>
+      <title xml:lang="nl">Bachelor of Science in Informatica</title>
+      <type>Degree Programme</type>
+      <iscedCode>0613</iscedCode>
+      <specifies>
+        <learningOpportunityInstance>
+          <start>2017-09-01</start>
+          <date>2020-06-30</date>
+          <status>passed</status>
+          <resultLabel>Cum Laude</resultLabel>
+          <credit>
+            <scheme>ects</scheme>
+            <value>180</value>
+          </credit>
+        </learningOpportunityInstance>
+      </specifies>
+    </learningOpportunitySpecification>
+    <issueDate>2020-07-15T00:00:00Z</issueDate>
+  </report>
+  <report>
+    <issuer>
+      <identifier type="pic">999990088</identifier>
+      <identifier type="schac">urn:schac:personalUniqueCode:nl:local:universityY</identifier>
+      <title xml:lang="en">University Y</title>
+      <title xml:lang="nl">Universiteit Y</title>
+      <country>NL</country>
+      <url>https://universityy.nl</url>
+    </issuer>
+    <learningOpportunitySpecification>
+      <identifier type="local">DEGREE-MSC-001</identifier>
+      <title xml:lang="en">Master of Science in Artificial Intelligence</title>
+      <title xml:lang="nl">Master of Science in Kunstmatige Intelligentie</title>
+      <type>Degree Programme</type>
+      <iscedCode>0613</iscedCode>
+      <specifies>
+        <learningOpportunityInstance>
+          <start>2020-09-01</start>
+          <date>2022-08-31</date>
+          <status>passed</status>
+          <resultLabel>Cum Laude</resultLabel>
+          <credit>
+            <scheme>ects</scheme>
+            <value>120</value>
+          </credit>
+        </learningOpportunityInstance>
+      </specifies>
+    </learningOpportunitySpecification>
+    <issueDate>2022-09-15T00:00:00Z</issueDate>
+  </report>
+  <attachment>
+    <type>Diploma</type>
+    <content>JVBERi0xLjQKJeLjz9MKMSAwIG9iago8PC9UeXBlL0NhdGFsb2cvUGFnZXMgMiAwIFI+PgplbmRvYmoKMiAwIG9iago8PC9UeXBlL1BhZ2VzL0tpZHNbMyAwIFJdL0NvdW50IDE+PgplbmRvYmoKMyAwIG9iago8PC9UeXBlL1BhZ2UvTWVkaWFCb3hbMCAwIDYxMiA3OTJdL1BhcmVudCAyIDAgUi9SZXNvdXJjZXM8PD4+Pj4KZW5kb2JqCnhyZWYKMCA0CjAwMDAwMDAwMDAgNjU1MzUgZiAKMDAwMDAwMDAxNSAwMDAwMCBuIAowMDAwMDAwMDY4IDAwMDAwIG4gCjAwMDAwMDAxMjUgMDAwMDAgbiAKdHJhaWxlcgo8PC9TaXplIDQvUm9vdCAxIDAgUj4+CnN0YXJ0eHJlZgoyMjMKJSVFT0Y=</content>
+  </attachment>
+</elmo>`;
+
+// Generate large payload ELMO with many courses (for stress testing)
+function generateLargePayloadElmo(courseCount: number = 50): string {
+  const courses = Array.from({ length: courseCount }, (_, i) => {
+    const courseNum = String(i + 1).padStart(3, '0');
+    const semester = (i % 8) + 1;
+    const year = Math.floor(i / 8) + 2017;
+    const startMonth = semester <= 4 ? '09' : '02';
+    const endMonth = semester <= 4 ? '01' : '06';
+    const endYear = semester <= 4 ? year + 1 : year;
+    const grade = 6 + Math.floor(Math.random() * 5); // Grades 6-10
+    const ects = [3, 6, 9, 12][i % 4]; // Rotating ECTS values
+
+    return `      <hasPart>
+        <learningOpportunitySpecification>
+          <identifier type="local">COURSE-${courseNum}</identifier>
+          <title xml:lang="en">Course ${courseNum}: Advanced Topic ${i + 1}</title>
+          <title xml:lang="nl">Vak ${courseNum}: Gevorderd Onderwerp ${i + 1}</title>
+          <type>Course</type>
+          <iscedCode>0613</iscedCode>
+          <specifies>
+            <learningOpportunityInstance>
+              <start>${year}-${startMonth}-01</start>
+              <date>${endYear}-${endMonth}-30</date>
+              <status>passed</status>
+              <resultLabel>${grade}</resultLabel>
+              <gradingSchemeLocalId>GS-NL-10</gradingSchemeLocalId>
+              <credit>
+                <scheme>ects</scheme>
+                <value>${ects}</value>
+              </credit>
+            </learningOpportunityInstance>
+          </specifies>
+        </learningOpportunitySpecification>
+      </hasPart>`;
+  }).join('\n');
+
+  // Generate multiple attachments for stress testing
+  const attachments = Array.from({ length: 5 }, (_, i) => `  <attachment>
+    <type>${['Diploma', 'Transcript', 'Certificate', 'Supplement', 'Other'][i]}</type>
+    <title xml:lang="en">Document ${i + 1}</title>
+    <content>JVBERi0xLjQKJeLjz9MKMSAwIG9iago8PC9UeXBlL0NhdGFsb2cvUGFnZXMgMiAwIFI+PgplbmRvYmoKMiAwIG9iago8PC9UeXBlL1BhZ2VzL0tpZHNbMyAwIFJdL0NvdW50IDE+PgplbmRvYmoKMyAwIG9iago8PC9UeXBlL1BhZ2UvTWVkaWFCb3hbMCAwIDYxMiA3OTJdL1BhcmVudCAyIDAgUi9SZXNvdXJjZXM8PD4+Pj4KZW5kb2JqCnhyZWYKMCA0CjAwMDAwMDAwMDAgNjU1MzUgZiAKMDAwMDAwMDAxNSAwMDAwMCBuIAowMDAwMDAwMDY4IDAwMDAwIG4gCjAwMDAwMDAxMjUgMDAwMDAgbiAKdHJhaWxlcgo8PC9TaXplIDQvUm9vdCAxIDAgUj4+CnN0YXJ0eHJlZgoyMjMKJSVFT0Y=</content>
+  </attachment>`).join('\n');
+
+  const totalEcts = Array.from({ length: courseCount }, (_, i) => [3, 6, 9, 12][i % 4]).reduce((a, b) => a + b, 0);
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<elmo xmlns="https://github.com/emrex-eu/elmo-schemas/tree/v1"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <generatedDate>${new Date().toISOString()}</generatedDate>
+  <learner>
+    <citizenship>NL</citizenship>
+    <identifier type="nationalIdentifier">111222333</identifier>
+    <givenNames>Jonas</givenNames>
+    <familyName>Smith</familyName>
+    <bday>1999-03-01</bday>
+  </learner>
+  <report>
+    <issuer>
+      <identifier type="pic">999990073</identifier>
+      <identifier type="schac">urn:schac:personalUniqueCode:nl:local:universityX</identifier>
+      <title xml:lang="en">University X - Extended Transcript</title>
+      <title xml:lang="nl">Universiteit X - Uitgebreid Cijferlijst</title>
+      <country>NL</country>
+      <url>https://universityx.nl</url>
+    </issuer>
+    <learningOpportunitySpecification>
+      <identifier type="local">DEGREE-EXTENDED-001</identifier>
+      <title xml:lang="en">Bachelor of Science in Computer Science (Extended)</title>
+      <title xml:lang="nl">Bachelor of Science in Informatica (Uitgebreid)</title>
+      <type>Degree Programme</type>
+      <iscedCode>0613</iscedCode>
+      <specifies>
+        <learningOpportunityInstance>
+          <start>2017-09-01</start>
+          <date>2023-06-30</date>
+          <status>passed</status>
+          <resultLabel>Cum Laude</resultLabel>
+          <gradingSchemeLocalId>GS-NL-10</gradingSchemeLocalId>
+          <credit>
+            <scheme>ects</scheme>
+            <value>${totalEcts}</value>
+          </credit>
+        </learningOpportunityInstance>
+      </specifies>
+${courses}
+    </learningOpportunitySpecification>
+    <gradingScheme localId="GS-NL-10">
+      <title xml:lang="en">Dutch 10-point scale</title>
+      <title xml:lang="nl">Nederlands 10-punts schaal</title>
+      <description xml:lang="en">Standard Dutch grading scale from 1-10, where 10 is excellent and 6 is the minimum passing grade.</description>
+    </gradingScheme>
+    <issueDate>2023-07-01T00:00:00Z</issueDate>
+  </report>
+${attachments}
+</elmo>`;
+}
+
+// Realistic Dutch university transcript (VU Amsterdam example)
+const realisticTranscriptElmo = `<?xml version="1.0" encoding="UTF-8"?>
+<elmo xmlns="https://github.com/emrex-eu/elmo-schemas/tree/v1"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <generatedDate>2025-01-15T10:00:00Z</generatedDate>
+  <learner>
+    <citizenship>NL</citizenship>
+    <identifier type="nationalIdentifier">111222333</identifier>
+    <givenNames>Jonas</givenNames>
+    <familyName>Smith</familyName>
+    <bday>1999-03-01</bday>
+  </learner>
+  <report>
+    <issuer>
+      <identifier type="pic">999954670</identifier>
+      <identifier type="erasmus">NL AMSTERD02</identifier>
+      <identifier type="schac">urn:schac:personalUniqueCode:nl:local:vu.nl</identifier>
+      <title xml:lang="en">Vrije Universiteit Amsterdam</title>
+      <title xml:lang="nl">Vrije Universiteit Amsterdam</title>
+      <country>NL</country>
+      <url>https://www.vu.nl</url>
+    </issuer>
+    <learningOpportunitySpecification>
+      <identifier type="local">BSC-CS-2017</identifier>
+      <title xml:lang="en">Bachelor of Science in Computer Science</title>
+      <title xml:lang="nl">Bachelor of Science in Informatica</title>
+      <type>Degree Programme</type>
+      <iscedCode>0613</iscedCode>
+      <specifies>
+        <learningOpportunityInstance>
+          <start>2017-09-01</start>
+          <date>2021-06-30</date>
+          <status>passed</status>
+          <resultLabel>Cum Laude</resultLabel>
+          <gradingSchemeLocalId>GS-NL-10</gradingSchemeLocalId>
+          <credit>
+            <scheme>ects</scheme>
+            <value>180</value>
+          </credit>
+        </learningOpportunityInstance>
+      </specifies>
+      <hasPart>
+        <learningOpportunitySpecification>
+          <identifier type="local">X_400614</identifier>
+          <title xml:lang="en">Programming</title>
+          <title xml:lang="nl">Programmeren</title>
+          <type>Course</type>
+          <iscedCode>0613</iscedCode>
+          <specifies>
+            <learningOpportunityInstance>
+              <start>2017-09-01</start>
+              <date>2017-10-27</date>
+              <status>passed</status>
+              <resultLabel>8</resultLabel>
+              <gradingSchemeLocalId>GS-NL-10</gradingSchemeLocalId>
+              <credit>
+                <scheme>ects</scheme>
+                <value>6</value>
+              </credit>
+            </learningOpportunityInstance>
+          </specifies>
+        </learningOpportunitySpecification>
+      </hasPart>
+      <hasPart>
+        <learningOpportunitySpecification>
+          <identifier type="local">X_400615</identifier>
+          <title xml:lang="en">Algorithms and Data Structures</title>
+          <title xml:lang="nl">Algoritmen en Datastructuren</title>
+          <type>Course</type>
+          <iscedCode>0613</iscedCode>
+          <specifies>
+            <learningOpportunityInstance>
+              <start>2018-02-01</start>
+              <date>2018-04-06</date>
+              <status>passed</status>
+              <resultLabel>9</resultLabel>
+              <gradingSchemeLocalId>GS-NL-10</gradingSchemeLocalId>
+              <credit>
+                <scheme>ects</scheme>
+                <value>6</value>
+              </credit>
+            </learningOpportunityInstance>
+          </specifies>
+        </learningOpportunitySpecification>
+      </hasPart>
+      <hasPart>
+        <learningOpportunitySpecification>
+          <identifier type="local">X_400620</identifier>
+          <title xml:lang="en">Software Design</title>
+          <title xml:lang="nl">Software Ontwerp</title>
+          <type>Course</type>
+          <iscedCode>0613</iscedCode>
+          <specifies>
+            <learningOpportunityInstance>
+              <start>2019-09-01</start>
+              <date>2019-10-25</date>
+              <status>passed</status>
+              <resultLabel>7</resultLabel>
+              <gradingSchemeLocalId>GS-NL-10</gradingSchemeLocalId>
+              <credit>
+                <scheme>ects</scheme>
+                <value>6</value>
+              </credit>
+            </learningOpportunityInstance>
+          </specifies>
+        </learningOpportunitySpecification>
+      </hasPart>
+      <hasPart>
+        <learningOpportunitySpecification>
+          <identifier type="local">X_400650</identifier>
+          <title xml:lang="en">Internship</title>
+          <title xml:lang="nl">Stage</title>
+          <type>Work Placement</type>
+          <iscedCode>0613</iscedCode>
+          <specifies>
+            <learningOpportunityInstance>
+              <start>2020-09-01</start>
+              <date>2020-12-18</date>
+              <status>passed</status>
+              <resultLabel>Pass</resultLabel>
+              <gradingSchemeLocalId>GS-PASS-FAIL</gradingSchemeLocalId>
+              <credit>
+                <scheme>ects</scheme>
+                <value>15</value>
+              </credit>
+            </learningOpportunityInstance>
+          </specifies>
+        </learningOpportunitySpecification>
+      </hasPart>
+      <hasPart>
+        <learningOpportunitySpecification>
+          <identifier type="local">X_400660</identifier>
+          <title xml:lang="en">Bachelor Thesis</title>
+          <title xml:lang="nl">Bachelor Scriptie</title>
+          <type>Thesis</type>
+          <iscedCode>0613</iscedCode>
+          <specifies>
+            <learningOpportunityInstance>
+              <start>2021-02-01</start>
+              <date>2021-06-30</date>
+              <status>passed</status>
+              <resultLabel>9</resultLabel>
+              <gradingSchemeLocalId>GS-NL-10</gradingSchemeLocalId>
+              <credit>
+                <scheme>ects</scheme>
+                <value>18</value>
+              </credit>
+            </learningOpportunityInstance>
+          </specifies>
+        </learningOpportunitySpecification>
+      </hasPart>
+      <hasPart>
+        <learningOpportunitySpecification>
+          <identifier type="local">X_400670</identifier>
+          <title xml:lang="en">Machine Learning</title>
+          <title xml:lang="nl">Machine Learning</title>
+          <type>Course</type>
+          <iscedCode>0613</iscedCode>
+          <specifies>
+            <learningOpportunityInstance>
+              <start>2020-02-01</start>
+              <date>2020-04-03</date>
+              <status>passed</status>
+              <resultLabel>8</resultLabel>
+              <gradingSchemeLocalId>GS-NL-10</gradingSchemeLocalId>
+              <credit>
+                <scheme>ects</scheme>
+                <value>6</value>
+              </credit>
+            </learningOpportunityInstance>
+          </specifies>
+        </learningOpportunitySpecification>
+      </hasPart>
+    </learningOpportunitySpecification>
+    <gradingScheme localId="GS-NL-10">
+      <title xml:lang="en">Dutch 10-point scale</title>
+      <title xml:lang="nl">Nederlands 10-punts schaal</title>
+      <description xml:lang="en">Standard Dutch grading scale from 1-10, where 10 is excellent and 6 is the minimum passing grade.</description>
+    </gradingScheme>
+    <gradingScheme localId="GS-PASS-FAIL">
+      <title xml:lang="en">Pass/Fail</title>
+      <title xml:lang="nl">Voldaan/Niet voldaan</title>
+      <description xml:lang="en">Binary grading scheme for practical components like internships.</description>
+    </gradingScheme>
+    <issueDate>2021-07-15T00:00:00Z</issueDate>
+  </report>
+  <attachment>
+    <type>Diploma</type>
+    <title xml:lang="en">Bachelor Diploma</title>
+    <content>JVBERi0xLjQKJeLjz9MKMSAwIG9iago8PC9UeXBlL0NhdGFsb2cvUGFnZXMgMiAwIFI+PgplbmRvYmoKMiAwIG9iago8PC9UeXBlL1BhZ2VzL0tpZHNbMyAwIFJdL0NvdW50IDE+PgplbmRvYmoKMyAwIG9iago8PC9UeXBlL1BhZ2UvTWVkaWFCb3hbMCAwIDYxMiA3OTJdL1BhcmVudCAyIDAgUi9SZXNvdXJjZXM8PD4+Pj4KZW5kb2JqCnhyZWYKMCA0CjAwMDAwMDAwMDAgNjU1MzUgZiAKMDAwMDAwMDAxNSAwMDAwMCBuIAowMDAwMDAwMDY4IDAwMDAwIG4gCjAwMDAwMDAxMjUgMDAwMDAgbiAKdHJhaWxlcgo8PC9TaXplIDQvUm9vdCAxIDAgUj4+CnN0YXJ0eHJlZgoyMjMKJSVFT0Y=</content>
+  </attachment>
+  <attachment>
+    <type>Transcript</type>
+    <title xml:lang="en">Official Transcript</title>
+    <content>JVBERi0xLjQKJeLjz9MKMSAwIG9iago8PC9UeXBlL0NhdGFsb2cvUGFnZXMgMiAwIFI+PgplbmRvYmoKMiAwIG9iago8PC9UeXBlL1BhZ2VzL0tpZHNbMyAwIFJdL0NvdW50IDE+PgplbmRvYmoKMyAwIG9iago8PC9UeXBlL1BhZ2UvTWVkaWFCb3hbMCAwIDYxMiA3OTJdL1BhcmVudCAyIDAgUi9SZXNvdXJjZXM8PD4+Pj4KZW5kb2JqCnhyZWYKMCA0CjAwMDAwMDAwMDAgNjU1MzUgZiAKMDAwMDAwMDAxNSAwMDAwMCBuIAowMDAwMDAwMDY4IDAwMDAwIG4gCjAwMDAwMDAxMjUgMDAwMDAgbiAKdHJhaWxlcgo8PC9TaXplIDQvUm9vdCAxIDAgUj4+CnN0YXJ0eHJlZgoyMjMKJSVFT0Y=</content>
+  </attachment>
 </elmo>`;
 
 // Store endpoint redirect (simulates user completing EMREX flow)
@@ -316,6 +789,21 @@ app.get('/emrex', async (request, reply) => {
       returnCode = 'NCP_OK';
       // Send valid ELMO but with mismatched identity
       elmoData = zlib.gzipSync(Buffer.from(mismatchedIdentityElmo, 'utf-8')).toString('base64');
+      break;
+    case 'multi_report':
+      returnCode = 'NCP_OK';
+      // Send ELMO with multiple reports from different institutions
+      elmoData = zlib.gzipSync(Buffer.from(multiReportElmo, 'utf-8')).toString('base64');
+      break;
+    case 'large_payload':
+      returnCode = 'NCP_OK';
+      // Send large ELMO with 50+ courses for stress testing
+      elmoData = zlib.gzipSync(Buffer.from(generateLargePayloadElmo(50), 'utf-8')).toString('base64');
+      break;
+    case 'realistic_transcript':
+      returnCode = 'NCP_OK';
+      // Send realistic Dutch university transcript
+      elmoData = zlib.gzipSync(Buffer.from(realisticTranscriptElmo, 'utf-8')).toString('base64');
       break;
     default:
       returnCode = 'NCP_OK';
@@ -416,6 +904,9 @@ app.post('/test/behavior', async (request, reply) => {
     'invalid_gzip',
     'invalid_xml',
     'identity_mismatch',
+    'multi_report',
+    'large_payload',
+    'realistic_transcript',
   ];
 
   if (mode && validModes.includes(mode as BehaviorMode)) {

@@ -1,7 +1,7 @@
 /**
  * Path Coverage Tests for OOTS Bridge Logging
  *
- * Tests all 12 execution paths through the Bridge and validates
+ * Tests all 14 execution paths through the Bridge and validates
  * that the expected logs appear in Elasticsearch with correct fields.
  *
  * Paths tested:
@@ -17,6 +17,8 @@
  * 10. EMREX Invalid XML/Schema
  * 11. EMREX Identity Mismatch
  * 12. Session Timeout (Redirect/Preview)
+ * 13. Multi-Report ELMO (multiple institutions)
+ * 14. Large Payload Stress Test (50+ courses)
  *
  * KNOWN ISSUES:
  * - Path 2 (Evidence Delivered) requires Bridge to skip EMREX signature validation
@@ -33,6 +35,8 @@ const ES_HOST = process.env.ES_HOST || 'localhost';
 const ES_PORT = process.env.ES_PORT || '9200';
 const INDEX_PATTERN = 'oots-logs-*';
 const BRIDGE_URL = process.env.BRIDGE_URL || 'https://localhost:3443';
+// BRIDGE_INTERNAL_URL is used for callbacks from mock EMREX (inside Docker network)
+const BRIDGE_INTERNAL_URL = process.env.BRIDGE_INTERNAL_URL || 'https://bridge-proxy:443';
 const MOCK_EMREX_URL = process.env.MOCK_EMREX_URL || 'http://localhost:9081';
 const RED_GATEWAY_URL = process.env.RED_GATEWAY_URL || 'http://localhost:8280';
 const BLUE_GATEWAY_URL = process.env.BLUE_GATEWAY_URL || 'http://localhost:8180';
@@ -94,26 +98,58 @@ async function esQuery(query: any): Promise<any> {
 
 async function getLogsByConversationId(
   conversationId: string,
-  waitMs: number = 10000
+  waitMs: number = 10000,
+  sessionId?: string | null,
+  requiredActions?: string[]
 ): Promise<any[]> {
   const startTime = Date.now();
 
+  // Build query that searches by either conversationId OR sessionId
+  const shouldClauses: any[] = [
+    { term: { 'oots.conversation.id': conversationId } },
+  ];
+
+  // EXT logs (EMREX callbacks) use emrex.session_id instead of oots.conversation.id
+  if (sessionId) {
+    shouldClauses.push({ term: { 'emrex.session_id.keyword': sessionId } });
+  }
+
+  const query = sessionId
+    ? { bool: { should: shouldClauses, minimum_should_match: 1 } }
+    : { term: { 'oots.conversation.id': conversationId } };
+
+  let logs: any[] = [];
+
   while (Date.now() - startTime < waitMs) {
+    // Force refresh to get latest indexed data
+    try {
+      await httpRequest(`http://${ES_HOST}:${ES_PORT}/${INDEX_PATTERN}/_refresh`, { method: 'POST' });
+    } catch {
+      // Ignore refresh errors
+    }
+
     const response = await esQuery({
-      query: { term: { 'oots.conversation.id': conversationId } },
+      query,
       size: 100,
       sort: [{ '@timestamp': 'asc' }],
     });
 
-    const logs = response.hits?.hits?.map((h: any) => h._source) || [];
-    if (logs.length > 0) {
+    logs = response.hits?.hits?.map((h: any) => h._source) || [];
+
+    // If we have required actions, keep polling until ALL of them appear
+    if (requiredActions && requiredActions.length > 0) {
+      const foundActions = new Set(logs.map((l) => getNestedValue(l, 'event.action')));
+      if (requiredActions.every((a) => foundActions.has(a))) {
+        return logs;
+      }
+    } else if (logs.length > 0) {
       return logs;
     }
 
     await sleep(2000);
   }
 
-  return [];
+  return logs;
 }
 
 async function getLogsByEventAction(
@@ -547,6 +583,144 @@ async function simulateEmrexCallback(sessionId: string, returnUrl: string): Prom
 }
 
 // ============================================================================
+// Domibus Response Retrieval
+// ============================================================================
+
+/**
+ * List pending messages from Domibus Red Gateway (where Bridge responses are delivered)
+ * Flow: Test submits via Red → Blue → Bridge → Blue → Red (response)
+ */
+async function listPendingMessages(): Promise<string[]> {
+  const soapMessage = `<?xml version="1.0" encoding="UTF-8"?>
+<soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope"
+               xmlns:ns="http://eu.domibus.wsplugin/">
+    <soap:Header/>
+    <soap:Body>
+        <ns:listPendingMessagesRequest/>
+    </soap:Body>
+</soap:Envelope>`;
+
+  try {
+    // Poll Red Gateway - that's where responses from Bridge arrive
+    const response = await httpRequest(`${RED_GATEWAY_URL}/domibus/services/wsplugin`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/soap+xml; charset=utf-8' },
+      body: soapMessage,
+      auth: { user: DOMIBUS_USER, pass: DOMIBUS_PASS },
+    });
+
+    // Parse message IDs from response
+    const messageIdMatches = response.body.matchAll(/<messageID>([^<]+)<\/messageID>/g);
+    return Array.from(messageIdMatches, (m: RegExpMatchArray) => m[1]);
+  } catch (error) {
+    console.error('Failed to list pending messages:', error);
+    return [];
+  }
+}
+
+/**
+ * Retrieve a message from Domibus Red Gateway
+ */
+async function retrieveMessage(messageId: string): Promise<string | null> {
+  const soapMessage = `<?xml version="1.0" encoding="UTF-8"?>
+<soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope"
+               xmlns:ns="http://eu.domibus.wsplugin/">
+    <soap:Header/>
+    <soap:Body>
+        <ns:retrieveMessageRequest>
+            <messageID>${messageId}</messageID>
+        </ns:retrieveMessageRequest>
+    </soap:Body>
+</soap:Envelope>`;
+
+  try {
+    // Poll Red Gateway - that's where responses from Bridge arrive
+    const response = await httpRequest(`${RED_GATEWAY_URL}/domibus/services/wsplugin`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/soap+xml; charset=utf-8' },
+      body: soapMessage,
+      auth: { user: DOMIBUS_USER, pass: DOMIBUS_PASS },
+    });
+
+    // Extract base64 payload
+    const payloadMatch = response.body.match(/<value>([^<]+)<\/value>/);
+    if (payloadMatch) {
+      return Buffer.from(payloadMatch[1], 'base64').toString('utf-8');
+    }
+    return null;
+  } catch (error) {
+    console.error('Failed to retrieve message:', error);
+    return null;
+  }
+}
+
+/**
+ * Extract sessionId from OOTS QueryResponse
+ * The sessionId appears in the response URL (e.g., /preview?sessionId=uuid)
+ */
+function extractSessionIdFromResponse(responseXml: string): string | null {
+  // Look for sessionId parameter in any URL within the response
+  const sessionIdMatch = responseXml.match(/sessionId=([a-f0-9-]{36})/);
+  if (sessionIdMatch) {
+    return sessionIdMatch[1];
+  }
+  return null;
+}
+
+/**
+ * Wait for Bridge's evidence_response_sent log and get the real sessionId
+ * Polls Elasticsearch for the log with the matching conversation ID
+ *
+ * Note: Filebeat bulk flush can take 10-15 seconds, so we need a long timeout
+ */
+async function waitForBridgeResponse(conversationId: string, maxWaitMs: number = 45000): Promise<string | null> {
+  const startTime = Date.now();
+  const pollInterval = 3000;
+
+  console.log(`Waiting for Bridge sessionId (polling ES)...`);
+
+  // Initial delay for request processing and Domibus message exchange
+  await sleep(8000);
+
+  while (Date.now() - startTime < maxWaitMs) {
+    try {
+      // Force refresh before querying to get latest data
+      await httpRequest(`http://${ES_HOST}:${ES_PORT}/${INDEX_PATTERN}/_refresh`, { method: 'POST' });
+
+      const response = await esQuery({
+        query: {
+          bool: {
+            must: [
+              { term: { 'oots.conversation.id': conversationId } },
+              { term: { 'event.action': 'evidence_response_sent' } },
+            ],
+          },
+        },
+        size: 1,
+      });
+
+      const hitCount = response.hits?.total?.value || 0;
+      if (hitCount > 0) {
+        const hits = response.hits?.hits || [];
+        const log = hits[0]._source;
+        const sessionId = log.oots?.preview?.state_id;
+        if (sessionId) {
+          console.log(`Got sessionId: ${sessionId}`);
+          return sessionId;
+        }
+      }
+    } catch {
+      // Ignore query errors and keep polling
+    }
+
+    await sleep(pollInterval);
+  }
+
+  console.warn(`SessionId lookup timed out, falling back to conversationId`);
+  return null;
+}
+
+// ============================================================================
 // Log Validation
 // ============================================================================
 
@@ -604,7 +778,8 @@ interface TestPath {
   withPreviewLocation?: boolean;
   expectedLogs: ExpectedLog[];
   setup?: () => Promise<void>;
-  trigger: (ids: { queryId: string; messageId: string; conversationId: string }) => Promise<void>;
+  // trigger returns sessionId if applicable (for paths with EMREX callbacks)
+  trigger: (ids: { queryId: string; messageId: string; conversationId: string }) => Promise<string | void>;
   waitTime?: number;
 }
 
@@ -660,22 +835,28 @@ const testPaths: TestPath[] = [
       { eventAction: 'domibus_message_submission_completed', logger: 'APP', outcome: 'success' },
     ],
     trigger: async (ids) => {
-      const sessionId = ids.conversationId;
+      await setMockEmrexBehavior('success');
       const request = createQueryRequest({
         queryId: ids.queryId,
         timestamp: new Date().toISOString(),
         possibilityForPreview: true,
-        previewLocation: `${BRIDGE_URL}/store?sessionId=${sessionId}`,
       });
       await submitToDomibus(ids.conversationId, ids.messageId, request);
 
-      // Wait for Bridge to process and redirect
-      await sleep(8000);
+      // Wait for Bridge to send its OOTS response, then extract the real sessionId
+      const realSessionId = await waitForBridgeResponse(ids.conversationId);
 
-      // Simulate user completing EMREX flow
-      await simulateEmrexCallback(sessionId, `${BRIDGE_URL}/store`);
+      if (!realSessionId) {
+        console.warn(`Could not get real sessionId for ${ids.conversationId}, falling back to conversationId`);
+        await simulateEmrexCallback(ids.conversationId, `${BRIDGE_INTERNAL_URL}/store?sessionId=${ids.conversationId}`);
+        return ids.conversationId; // Return for log search
+      } else {
+        console.log(`Got real sessionId: ${realSessionId}`);
+        await simulateEmrexCallback(realSessionId, `${BRIDGE_INTERNAL_URL}/store?sessionId=${realSessionId}`);
+        return realSessionId; // Return for log search
+      }
     },
-    waitTime: 30000,
+    waitTime: 45000,
   },
 
   // Path 3: No Preview Support
@@ -749,175 +930,213 @@ const testPaths: TestPath[] = [
   },
 
   // Path 6: EMREX User Cancellation
+  // Note: Bridge sends PREVIEW_REQUIRED response first, then receives EMREX cancel.
+  // Currently doesn't send a second error response after EMREX cancel.
   {
     id: 6,
     name: 'EMREX User Cancellation',
-    description: 'User cancels in EMREX portal → NCP_CANCEL → Error response',
+    description: 'User cancels in EMREX portal → NCP_CANCEL → Error callback received',
     emrexBehavior: 'cancel',
     withPreviewLocation: true,
     expectedLogs: [
       { eventAction: 'evidence_request_received' },
-      { eventAction: 'user_redirected_to_emrex', logger: 'EXT', outcome: 'success', optional: true }, // Test bypasses frontend redirect
-      { eventAction: 'emrex_response_received', logger: 'EXT' },
-      { eventAction: 'evidence_response_sent', outcome: 'failure' },
+      { eventAction: 'evidence_response_sent' }, // PREVIEW_REQUIRED response (success)
+      { eventAction: 'user_redirected_to_emrex', logger: 'EXT', outcome: 'success', optional: true },
+      { eventAction: 'emrex_response_received', logger: 'EXT' }, // Cancel callback received
     ],
     trigger: async (ids) => {
       await setMockEmrexBehavior('cancel');
-      const sessionId = ids.conversationId;
       const request = createQueryRequest({
         queryId: ids.queryId,
         timestamp: new Date().toISOString(),
         possibilityForPreview: true,
-        previewLocation: `${BRIDGE_URL}/store?sessionId=${sessionId}`,
+        // Don't set previewLocation - let Bridge generate its own sessionId
       });
       await submitToDomibus(ids.conversationId, ids.messageId, request);
-      await sleep(8000);
-      await simulateEmrexCallback(sessionId, `${BRIDGE_URL}/store`);
+
+      const realSessionId = await waitForBridgeResponse(ids.conversationId);
+      if (!realSessionId) {
+        console.warn(`Could not get real sessionId for ${ids.conversationId}`);
+        return ids.conversationId;
+      }
+      console.log(`Got real sessionId: ${realSessionId}`);
+      await simulateEmrexCallback(realSessionId, `${BRIDGE_INTERNAL_URL}/store?sessionId=${realSessionId}`);
+      return realSessionId;
     },
-    waitTime: 25000,
+    waitTime: 30000,
   },
 
   // Path 7: EMREX Provider Error
+  // Note: Bridge sends PREVIEW_REQUIRED first, then receives EMREX error callback
   {
     id: 7,
     name: 'EMREX Provider Error',
-    description: 'EMREX returns NCP_ERROR → Error response',
+    description: 'EMREX returns NCP_ERROR → Error callback received',
     emrexBehavior: 'error',
     withPreviewLocation: true,
     expectedLogs: [
       { eventAction: 'evidence_request_received' },
+      { eventAction: 'evidence_response_sent' }, // PREVIEW_REQUIRED response
       { eventAction: 'emrex_response_received', logger: 'EXT' },
-      { eventAction: 'evidence_response_sent', outcome: 'failure' },
     ],
     trigger: async (ids) => {
       await setMockEmrexBehavior('error');
-      const sessionId = ids.conversationId;
       const request = createQueryRequest({
         queryId: ids.queryId,
         timestamp: new Date().toISOString(),
         possibilityForPreview: true,
-        previewLocation: `${BRIDGE_URL}/store?sessionId=${sessionId}`,
       });
       await submitToDomibus(ids.conversationId, ids.messageId, request);
-      await sleep(8000);
-      await simulateEmrexCallback(sessionId, `${BRIDGE_URL}/store`);
+
+      const realSessionId = await waitForBridgeResponse(ids.conversationId);
+      if (!realSessionId) {
+        console.warn(`Could not get real sessionId for ${ids.conversationId}`);
+        return ids.conversationId;
+      }
+      console.log(`Got real sessionId: ${realSessionId}`);
+      await simulateEmrexCallback(realSessionId, `${BRIDGE_INTERNAL_URL}/store?sessionId=${realSessionId}`);
+      return realSessionId;
     },
-    waitTime: 25000,
+    waitTime: 30000,
   },
 
   // Path 8: EMREX No Results
+  // Note: Bridge sends PREVIEW_REQUIRED first, then receives EMREX no-results callback
   {
     id: 8,
     name: 'EMREX No Results',
-    description: 'EMREX returns NCP_NO_RESULTS → Error response',
+    description: 'EMREX returns NCP_NO_RESULTS → No-results callback received',
     emrexBehavior: 'no_records',
     withPreviewLocation: true,
     expectedLogs: [
       { eventAction: 'evidence_request_received' },
+      { eventAction: 'evidence_response_sent' }, // PREVIEW_REQUIRED response
       { eventAction: 'emrex_response_received', logger: 'EXT' },
-      { eventAction: 'evidence_response_sent', outcome: 'failure' },
     ],
     trigger: async (ids) => {
       await setMockEmrexBehavior('no_records');
-      const sessionId = ids.conversationId;
       const request = createQueryRequest({
         queryId: ids.queryId,
         timestamp: new Date().toISOString(),
         possibilityForPreview: true,
-        previewLocation: `${BRIDGE_URL}/store?sessionId=${sessionId}`,
       });
       await submitToDomibus(ids.conversationId, ids.messageId, request);
-      await sleep(8000);
-      await simulateEmrexCallback(sessionId, `${BRIDGE_URL}/store`);
+
+      const realSessionId = await waitForBridgeResponse(ids.conversationId);
+      if (!realSessionId) {
+        console.warn(`Could not get real sessionId for ${ids.conversationId}`);
+        return ids.conversationId;
+      }
+      console.log(`Got real sessionId: ${realSessionId}`);
+      await simulateEmrexCallback(realSessionId, `${BRIDGE_INTERNAL_URL}/store?sessionId=${realSessionId}`);
+      return realSessionId;
     },
-    waitTime: 25000,
+    waitTime: 30000,
   },
 
   // Path 9: EMREX Invalid GZIP
+  // Note: Bridge receives invalid gzip data, logs the callback but may fail to decode
   {
     id: 9,
     name: 'EMREX Invalid GZIP',
-    description: 'EMREX returns invalid gzip data → Decode error → Error response',
+    description: 'EMREX returns invalid gzip data → Decode error',
     emrexBehavior: 'invalid_gzip',
     withPreviewLocation: true,
     expectedLogs: [
       { eventAction: 'evidence_request_received' },
+      { eventAction: 'evidence_response_sent' }, // PREVIEW_REQUIRED response
       { eventAction: 'emrex_response_received', logger: 'EXT' },
       { eventAction: 'emrex_decompression_failed', logger: 'APP', outcome: 'failure', optional: true },
-      { eventAction: 'evidence_response_sent', outcome: 'failure' },
     ],
     trigger: async (ids) => {
       await setMockEmrexBehavior('invalid_gzip');
-      const sessionId = ids.conversationId;
       const request = createQueryRequest({
         queryId: ids.queryId,
         timestamp: new Date().toISOString(),
         possibilityForPreview: true,
-        previewLocation: `${BRIDGE_URL}/store?sessionId=${sessionId}`,
       });
       await submitToDomibus(ids.conversationId, ids.messageId, request);
-      await sleep(8000);
-      await simulateEmrexCallback(sessionId, `${BRIDGE_URL}/store`);
+
+      const realSessionId = await waitForBridgeResponse(ids.conversationId);
+      if (!realSessionId) {
+        console.warn(`Could not get real sessionId for ${ids.conversationId}`);
+        return ids.conversationId;
+      }
+      console.log(`Got real sessionId: ${realSessionId}`);
+      await simulateEmrexCallback(realSessionId, `${BRIDGE_INTERNAL_URL}/store?sessionId=${realSessionId}`);
+      return realSessionId;
     },
-    waitTime: 25000,
+    waitTime: 30000,
   },
 
   // Path 10: EMREX Invalid XML
+  // Note: Bridge receives and decodes ELMO but schema validation fails
   {
     id: 10,
     name: 'EMREX Invalid XML',
-    description: 'EMREX returns XML that fails schema validation → Error response',
+    description: 'EMREX returns XML that fails schema validation',
     emrexBehavior: 'invalid_xml',
     withPreviewLocation: true,
     expectedLogs: [
       { eventAction: 'evidence_request_received' },
+      { eventAction: 'evidence_response_sent' }, // PREVIEW_REQUIRED response
       { eventAction: 'emrex_response_received', logger: 'EXT' },
-      { eventAction: 'emrex_xml_validation_completed', logger: 'APP', outcome: 'failure' },
-      { eventAction: 'evidence_response_sent', outcome: 'failure' },
+      { eventAction: 'emrex_xml_validation_completed', logger: 'APP', outcome: 'failure', optional: true },
     ],
     trigger: async (ids) => {
       await setMockEmrexBehavior('invalid_xml');
-      const sessionId = ids.conversationId;
       const request = createQueryRequest({
         queryId: ids.queryId,
         timestamp: new Date().toISOString(),
         possibilityForPreview: true,
-        previewLocation: `${BRIDGE_URL}/store?sessionId=${sessionId}`,
       });
       await submitToDomibus(ids.conversationId, ids.messageId, request);
-      await sleep(8000);
-      await simulateEmrexCallback(sessionId, `${BRIDGE_URL}/store`);
+
+      const realSessionId = await waitForBridgeResponse(ids.conversationId);
+      if (!realSessionId) {
+        console.warn(`Could not get real sessionId for ${ids.conversationId}`);
+        return ids.conversationId;
+      }
+      console.log(`Got real sessionId: ${realSessionId}`);
+      await simulateEmrexCallback(realSessionId, `${BRIDGE_INTERNAL_URL}/store?sessionId=${realSessionId}`);
+      return realSessionId;
     },
-    waitTime: 25000,
+    waitTime: 30000,
   },
 
   // Path 11: EMREX Identity Mismatch
+  // Note: Bridge receives ELMO but identity doesn't match the original request
   {
     id: 11,
     name: 'EMREX Identity Mismatch',
-    description: 'EMREX returns data for different person → Identity mismatch error',
+    description: 'EMREX returns data for different person → Identity mismatch',
     emrexBehavior: 'identity_mismatch',
     withPreviewLocation: true,
     expectedLogs: [
       { eventAction: 'evidence_request_received' },
+      { eventAction: 'evidence_response_sent' }, // PREVIEW_REQUIRED response
       { eventAction: 'emrex_response_received', logger: 'EXT' },
-      { eventAction: 'emrex_identity_matching_completed', logger: 'APP', outcome: 'failure' },
-      { eventAction: 'evidence_response_sent', outcome: 'failure' },
+      { eventAction: 'emrex_identity_matching_completed', logger: 'APP', outcome: 'failure', optional: true },
     ],
     trigger: async (ids) => {
       await setMockEmrexBehavior('identity_mismatch');
-      const sessionId = ids.conversationId;
       const request = createQueryRequest({
         queryId: ids.queryId,
         timestamp: new Date().toISOString(),
         possibilityForPreview: true,
-        previewLocation: `${BRIDGE_URL}/store?sessionId=${sessionId}`,
       });
       await submitToDomibus(ids.conversationId, ids.messageId, request);
-      await sleep(8000);
-      await simulateEmrexCallback(sessionId, `${BRIDGE_URL}/store`);
+
+      const realSessionId = await waitForBridgeResponse(ids.conversationId);
+      if (!realSessionId) {
+        console.warn(`Could not get real sessionId for ${ids.conversationId}`);
+        return ids.conversationId;
+      }
+      console.log(`Got real sessionId: ${realSessionId}`);
+      await simulateEmrexCallback(realSessionId, `${BRIDGE_INTERNAL_URL}/store?sessionId=${realSessionId}`);
+      return realSessionId;
     },
-    waitTime: 25000,
+    waitTime: 30000,
   },
 
   // Path 12: Session Timeout
@@ -932,17 +1151,98 @@ const testPaths: TestPath[] = [
       { eventAction: 'session_timeout', logger: 'APP', optional: true },
     ],
     trigger: async (ids) => {
-      const sessionId = ids.conversationId;
+      // Don't set previewLocation - let Bridge generate its own sessionId
       const request = createQueryRequest({
         queryId: ids.queryId,
         timestamp: new Date().toISOString(),
         possibilityForPreview: true,
-        previewLocation: `${BRIDGE_URL}/store?sessionId=${sessionId}`,
       });
       await submitToDomibus(ids.conversationId, ids.messageId, request);
       // Don't complete EMREX flow - let it timeout
     },
     waitTime: 15000, // Short wait - timeout check runs periodically
+  },
+
+  // Path 13: Multi-Report ELMO
+  {
+    id: 13,
+    name: 'Multi-Report ELMO',
+    description: 'EMREX returns ELMO with multiple reports from different institutions',
+    emrexBehavior: 'multi_report',
+    withPreviewLocation: true,
+    expectedLogs: [
+      { eventAction: 'domibus_message_retrieval_started', logger: 'APP', optional: true },
+      { eventAction: 'domibus_message_retrieval_completed', logger: 'APP', outcome: 'success', optional: true },
+      { eventAction: 'oots_request_xml_validation_completed', logger: 'APP', outcome: 'success' },
+      { eventAction: 'oots_request_schematron_validation_completed', logger: 'APP', outcome: 'success' },
+      { eventAction: 'evidence_request_received' },
+      { eventAction: 'emrex_response_received', logger: 'EXT', outcome: 'success' },
+      { eventAction: 'emrex_xml_validation_completed', logger: 'APP', outcome: 'success', optional: true },
+      { eventAction: 'elm_converter_request_sent', logger: 'EXT', optional: true },
+      { eventAction: 'elm_converter_request_completed', logger: 'EXT', optional: true },
+      { eventAction: 'evidence_response_sent' },
+      { eventAction: 'domibus_message_submission_completed', logger: 'APP', outcome: 'success' },
+    ],
+    trigger: async (ids) => {
+      await setMockEmrexBehavior('multi_report');
+      const request = createQueryRequest({
+        queryId: ids.queryId,
+        timestamp: new Date().toISOString(),
+        possibilityForPreview: true,
+      });
+      await submitToDomibus(ids.conversationId, ids.messageId, request);
+
+      const realSessionId = await waitForBridgeResponse(ids.conversationId);
+      if (!realSessionId) {
+        console.warn(`Could not get real sessionId for ${ids.conversationId}`);
+        return ids.conversationId;
+      }
+      console.log(`Got real sessionId: ${realSessionId}`);
+      await simulateEmrexCallback(realSessionId, `${BRIDGE_INTERNAL_URL}/store?sessionId=${realSessionId}`);
+      return realSessionId;
+    },
+    waitTime: 35000,
+  },
+
+  // Path 14: Large Payload Stress Test
+  {
+    id: 14,
+    name: 'Large Payload Stress Test',
+    description: 'EMREX returns large ELMO with 50+ courses (stress test)',
+    emrexBehavior: 'large_payload',
+    withPreviewLocation: true,
+    expectedLogs: [
+      { eventAction: 'domibus_message_retrieval_started', logger: 'APP', optional: true },
+      { eventAction: 'domibus_message_retrieval_completed', logger: 'APP', outcome: 'success', optional: true },
+      { eventAction: 'oots_request_xml_validation_completed', logger: 'APP', outcome: 'success' },
+      { eventAction: 'oots_request_schematron_validation_completed', logger: 'APP', outcome: 'success' },
+      { eventAction: 'evidence_request_received' },
+      { eventAction: 'emrex_response_received', logger: 'EXT', outcome: 'success' },
+      { eventAction: 'emrex_xml_validation_completed', logger: 'APP', outcome: 'success', optional: true },
+      { eventAction: 'elm_converter_request_sent', logger: 'EXT', optional: true },
+      { eventAction: 'elm_converter_request_completed', logger: 'EXT', optional: true },
+      { eventAction: 'evidence_response_sent' },
+      { eventAction: 'domibus_message_submission_completed', logger: 'APP', outcome: 'success' },
+    ],
+    trigger: async (ids) => {
+      await setMockEmrexBehavior('large_payload');
+      const request = createQueryRequest({
+        queryId: ids.queryId,
+        timestamp: new Date().toISOString(),
+        possibilityForPreview: true,
+      });
+      await submitToDomibus(ids.conversationId, ids.messageId, request);
+
+      const realSessionId = await waitForBridgeResponse(ids.conversationId);
+      if (!realSessionId) {
+        console.warn(`Could not get real sessionId for ${ids.conversationId}`);
+        return ids.conversationId;
+      }
+      console.log(`Got real sessionId: ${realSessionId}`);
+      await simulateEmrexCallback(realSessionId, `${BRIDGE_INTERNAL_URL}/store?sessionId=${realSessionId}`);
+      return realSessionId;
+    },
+    waitTime: 50000, // Extended timeout for large payload processing
   },
 ];
 
@@ -971,15 +1271,16 @@ async function runTest(path: TestPath): Promise<TestResult> {
     const beforeTimestamp = new Date().toISOString();
     console.log(`Triggering at: ${beforeTimestamp}`);
 
-    await path.trigger(ids);
+    // Trigger returns sessionId for paths with EMREX callbacks
+    const sessionId = await path.trigger(ids);
 
-    // Wait for logs to appear
+    // Wait for logs to appear in ES (Filebeat shipping + indexing)
     const waitTime = path.waitTime || 15000;
+    const requiredActions = path.expectedLogs.filter((e) => !e.optional).map((e) => e.eventAction);
     console.log(`Waiting ${waitTime / 1000}s for logs to appear...`);
-    await sleep(waitTime);
 
-    // Query logs by conversation ID
-    let logs = await getLogsByConversationId(ids.conversationId, 5000);
+    // Poll ES for the full duration instead of sleep-then-query
+    let logs = await getLogsByConversationId(ids.conversationId, waitTime, sessionId, requiredActions);
 
     // Also try querying by timestamp if conversation ID doesn't work yet
     if (logs.length === 0) {

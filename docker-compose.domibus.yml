@@ -53,10 +53,14 @@ services:
 
   # Domibus AS4 Gateway
   domibus:
-    image: tanzari/domibus:latest
+    build:
+      context: domibus
+      args:
+        DOMIBUS_VERSION: ${DOMIBUS_VERSION:-5.1.9}
+    image: domibus:${DOMIBUS_VERSION:-5.1.9}
     container_name: domibus
     environment:
-      # Database (tanzari/domibus format)
+      # Database
       DOMIBUS_DB_SERVERNAME: domibus-mysql
       domibus.database.serverName: domibus-mysql
       domibus.datasource.user: edelivery

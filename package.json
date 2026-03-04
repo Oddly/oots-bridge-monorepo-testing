@@ -10,6 +10,7 @@
     "stop": "docker compose down",
     "clean": "docker compose down -v && rm -f testdata/*.ndjson testdata/*.log",
     "mock:emrex": "tsx mocks/mock-emrex-provider.ts",
+    "test:mock-emrex": "tsx mocks/mock-emrex-provider.test.ts",
     "test:scenarios": "tsx mocks/test-scenarios.ts",
     "domibus:setup": "./domibus/scripts/generate-keystores.sh",
     "domibus:start": "docker compose -f docker-compose.yml -f docker-compose.domibus.yml up -d",
